@@ -30,7 +30,13 @@ const TRACK = {
 };
 
 /** Install a fresh set of mocks and import background.js. */
-async function loadWorker({ statuses, track = TRACK, settings = SETTINGS }) {
+async function loadWorker({
+  statuses,
+  track = TRACK,
+  settings = SETTINGS,
+  downloadOutcome = "complete",
+  downloadDelayMs = 0,
+}) {
   const calls = {
     downloads: [],
     notifications: [],
@@ -41,6 +47,8 @@ async function loadWorker({ statuses, track = TRACK, settings = SETTINGS }) {
   let actionHandler = null;
   let jobCounter = 0;
   const statusQueue = [...statuses];
+  // chrome.downloads.onChanged listeners, so the mock can report completion.
+  const downloadListeners = new Set();
 
   globalThis.chrome = {
     runtime: {
@@ -56,9 +64,22 @@ async function loadWorker({ statuses, track = TRACK, settings = SETTINGS }) {
     downloads: {
       download: async (opts) => {
         calls.downloads.push(opts);
-        return 7;
+        const id = 7;
+        // Real Chrome reports the terminal state later, via onChanged — after the
+        // worker has had a chance to subscribe. A timer (not a microtask) mirrors that.
+        setTimeout(() => {
+          const delta =
+            downloadOutcome === "complete"
+              ? { id, state: { current: "complete" } }
+              : { id, state: { current: "interrupted" }, error: { current: downloadOutcome } };
+          for (const listener of downloadListeners) listener(delta);
+        }, downloadDelayMs);
+        return id;
       },
-      onChanged: { addListener: () => {} },
+      onChanged: {
+        addListener: (fn) => downloadListeners.add(fn),
+        removeListener: (fn) => downloadListeners.delete(fn),
+      },
     },
     notifications: {
       create: async (opts) => calls.notifications.push(opts),
@@ -209,4 +230,55 @@ test("a repeated click for the same song does not start a second job", async () 
 
   assert.equal(getJobCount(), 1, "only one /download POST");
   assert.equal(calls.downloads.length, 1);
+});
+
+test("an interrupted transfer is reported as a failure, not a success", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    downloadOutcome: "NETWORK_FAILED",
+  });
+
+  await run();
+  await settle();
+
+  assert.equal(calls.downloads.length, 1, "the download was attempted");
+  assert.equal(calls.notifications.length, 1, "exactly one notification");
+  assert.equal(calls.notifications[0].title, "Download failed");
+  assert.match(calls.notifications[0].message, /connection dropped/i);
+  assert.ok(calls.badges.includes("!"), `expected a failure badge, got ${calls.badges}`);
+  assert.ok(!calls.badges.includes("✓"), "must not claim success");
+});
+
+test("cancelling the Save-as dialog is silent, not an error", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, askWhereToSave: true },
+    downloadOutcome: "USER_CANCELED",
+  });
+
+  await run();
+  await settle();
+
+  assert.equal(calls.notifications.length, 0, "no notification when the user cancels");
+  assert.ok(!calls.badges.includes("!"), `no failure badge, got ${calls.badges}`);
+});
+
+test("success is announced only after Chrome reports completion", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    downloadOutcome: "complete",
+    downloadDelayMs: 400,
+  });
+
+  // Do not await: we want to observe the state *before* the download completes.
+  const pending = run();
+  // The job is polled every 700ms, so wait past the first tick for the transfer to start.
+  await settle(1000);
+  assert.equal(calls.downloads.length, 1, "the transfer started");
+  assert.equal(calls.notifications.length, 0, "no premature 'Saved' notification");
+
+  await pending;
+  await settle();
+  assert.equal(calls.notifications.length, 1);
+  assert.equal(calls.notifications[0].title, "Saved");
 });

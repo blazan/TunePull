@@ -22,8 +22,6 @@ const POLL_INTERVAL_MS = 700;
 const activeJobs = new Map();
 /** Keys (video id / url / title) of downloads currently in flight, to dedupe clicks. */
 const inFlight = new Set();
-/** downloadId -> { filename, jobId } for files handed to the downloads API. */
-const pendingDownloads = new Map();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -201,6 +199,54 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Resolve once Chrome reports the download's terminal state.
+ *
+ * chrome.downloads.download() resolves when the transfer *starts*, so awaiting it
+ * alone would announce "Saved" before the bytes are on disk — and a transfer that
+ * then fails would show both a success and an error. Waiting on onChanged also
+ * lets the event wake a suspended service worker. The timeout is a safety net so
+ * a missed event cannot leave the promise pending forever.
+ */
+function waitForDownload(downloadId, timeoutMs = 5 * 60 * 1000) {
+  return new Promise((resolve) => {
+    const finish = (outcome) => {
+      chrome.downloads.onChanged.removeListener(listener);
+      clearTimeout(timer);
+      resolve(outcome);
+    };
+    const listener = (delta) => {
+      if (delta?.id !== downloadId) return;
+      const state = delta.state?.current;
+      if (state === "complete") finish({ ok: true });
+      else if (state === "interrupted") finish({ ok: false, error: delta.error?.current || "" });
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: "TIMEOUT" }), timeoutMs);
+    chrome.downloads.onChanged.addListener(listener);
+  });
+}
+
+/** Chrome's download-interrupt reasons, in words the user can act on. */
+function downloadErrorMessage(reason, filename) {
+  switch (reason) {
+    case "NETWORK_FAILED":
+      return `The connection dropped while saving ${filename}. If the helper server was restarted, try again.`;
+    case "FILE_FAILED":
+    case "FILE_ACCESS_DENIED":
+    case "FILE_NO_SPACE":
+      return `Chrome could not write ${filename} (${reason}). Check the download folder and free space.`;
+    case "SERVER_BAD_CONTENT":
+    case "SERVER_FAILED":
+      return `The helper server stopped sending ${filename} before it finished.`;
+    case "TIMEOUT":
+      return `Timed out waiting for ${filename} to finish saving.`;
+    default:
+      return reason
+        ? `The download of ${filename} failed (${reason}).`
+        : `The download of ${filename} failed.`;
+  }
+}
+
 /** POST, poll, then save — the full flow for one click. */
 async function runDownload(track) {
   let jobId = null;
@@ -239,7 +285,17 @@ async function runDownload(track) {
       conflictAction: "uniquify",
     });
 
-    pendingDownloads.set(downloadId, { filename, jobId });
+    // download() resolves when the transfer starts, not when it finishes.
+    const outcome = await waitForDownload(downloadId);
+    if (!outcome.ok) {
+      // Cancelling the Save-as dialog is a choice, not an error.
+      if (outcome.error === "USER_CANCELED") {
+        setBadge("");
+        return;
+      }
+      throw new Error(downloadErrorMessage(outcome.error, filename));
+    }
+
     flashBadge("✓", "#34d399");
     await notify("Saved", filename);
   } catch (error) {
@@ -280,11 +336,6 @@ async function handleAction() {
     inFlight.delete(key);
   }
 }
-
-// A finished download clears its own bookkeeping.
-chrome.downloads.onChanged.addListener((delta) => {
-  if (delta?.state?.current === "complete") pendingDownloads.delete(delta.id);
-});
 
 chrome.action.onClicked.addListener(handleAction);
 

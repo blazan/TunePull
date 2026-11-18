@@ -267,6 +267,10 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
   while it sent the file, so the browser saw the transfer break. Fixed in 1.0.1
   (`Content-Disposition` now uses the RFC 6266 UTF-8 form). Update the image:
   `docker compose pull && docker compose up -d`.
+- **"Saved" notification, but no file (or a half-written one)** — fixed in 1.0.1. The
+  extension used to announce success as soon as the transfer *started*, so a broken
+  download could show both "Saved" and a Chrome error. It now waits for Chrome to
+  report the real outcome and reports a failure with the reason instead.
 - **"No supported JavaScript runtime could be found"** — recent yt-dlp versions use a
   JS runtime to fully solve YouTube; without one, formats go missing and some
   downloads fail at random. The published image bundles `deno` and `yt-dlp-ejs`

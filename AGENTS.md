@@ -96,9 +96,12 @@ rendering only — never point it at real downloads.
 ## Tests
 
 `node --test "tests/*.test.mjs"` covers the pure helpers in
-`extension/lib/config.js` (templates, path building, host trust). These run in
-plain Node — keep `config.js` free of `chrome.*` at import time so they stay
-runnable.
+`extension/lib/config.js` (templates, path building, host trust) and drives
+`extension/background.js` end to end against mocked `chrome.*` + `fetch`
+(`tests/background.test.mjs`). The mock reports download completion via
+`chrome.downloads.onChanged`, because `chrome.downloads.download()` resolves when
+the transfer *starts* — code must not treat that as success. Keep `config.js` free
+of `chrome.*` at import time so the helper tests stay runnable.
 
 `python3 tests/test_server.py` covers the helper server: the filename-header
 helpers, the YouTube error hints, and a full `POST /download` → poll → `/file/<id>`
