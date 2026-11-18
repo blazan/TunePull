@@ -1,0 +1,27 @@
+# TunePull helper server — ready for a Raspberry Pi (or any always-on machine).
+#
+#   TUNEPULL_TOKEN='pick-a-long-random-string' docker compose up -d
+#
+# The image is published for both arm64 (Pi 3/4/5, 64-bit OS) and amd64, so Docker
+# picks the right one automatically. No need to build anything on the Pi.
+#
+# Update to the newest build later with:
+#   docker compose pull && docker compose up -d
+
+services:
+  tunepull:
+    image: blazanmaric/tunepull-server:latest
+    container_name: tunepull-server
+    restart: unless-stopped
+    ports:
+      # host:container — change the left side if 8756 is already taken.
+      - "8756:8756"
+    environment:
+      # Set a fixed token so it survives restarts. Change this value!
+      # Leave it empty to get a random token printed in the logs instead.
+      - TUNEPULL_TOKEN=${TUNEPULL_TOKEN:-change-me-please}
+    command: ["--token", "${TUNEPULL_TOKEN:-change-me-please}"]
+    # yt-dlp + ffmpeg are CPU/RAM heavy on a Pi; cap them so a job cannot starve
+    # the host. Tune the memory limit to your board (a Pi 4 with 2 GB is fine).
+    mem_limit: 1g
+    cpus: 2.0

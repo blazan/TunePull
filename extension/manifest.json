@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "TunePull",
+  "version": "1.0.0",
+  "description": "One-click download of the song playing on YouTube Music or YouTube, converted to MP3 by a helper server on your own machine.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "tabs",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://music.youtube.com/*",
+    "https://www.youtube.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Download as MP3",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "download-current-track": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "Download the current song as MP3"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://music.youtube.com/*",
+        "https://www.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

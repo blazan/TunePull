@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TunePull — preview</title>
+    <style>
+      :root {
+        --bg: #0b0d12; --panel: #141821; --line: #232a37;
+        --text: #e8ecf3; --muted: #93a0b4; --accent: #ff0033; --ok: #34d399; --err: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: radial-gradient(1200px 600px at 20% -10%, #1c2130, #0b0d12);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      header { padding: 26px 28px 6px; }
+      h1 { margin: 0 0 4px; font-size: 20px; }
+      header p { margin: 0; color: var(--muted); max-width: 780px; }
+      .wrap { display: flex; gap: 22px; padding: 18px 28px 40px; flex-wrap: wrap; align-items: flex-start; }
+      .col { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+      .col h2 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+      .col .sub { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+
+      /* Browser chrome with a simulated extension toolbar */
+      .browser { width: 640px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #20242e; }
+      .tabbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #2a2f3a; }
+      .lights { display: flex; gap: 6px; }
+      .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+      .lights i:nth-child(1) { background: #ff5f57; }
+      .lights i:nth-child(2) { background: #febc2e; }
+      .lights i:nth-child(3) { background: #28c840; }
+      .tab { flex: 1; background: #3a404d; color: #cdd5e2; font-size: 11px; padding: 5px 9px; border-radius: 7px 7px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .toolbar { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #262b35; }
+      .pill { flex: 1; background: #1b1f27; color: var(--muted); font-size: 11px; padding: 5px 10px; border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ext {
+        position: relative; width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line);
+        background: linear-gradient(135deg, var(--accent), #ff4d6d); display: grid; place-items: center;
+        color: #fff; font-size: 13px; cursor: pointer; user-select: none;
+      }
+      .ext:hover { filter: brightness(1.12); }
+      .ext:active { transform: scale(0.95); }
+      .badge {
+        position: absolute; right: -6px; bottom: -6px; min-width: 16px; height: 16px; padding: 0 3px;
+        border-radius: 9px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700;
+        display: grid; place-items: center; border: 2px solid #262b35; line-height: 1;
+      }
+      .badge.ok { background: var(--ok); }
+      .badge.err { background: var(--err); }
+      .badge:empty { display: none; }
+
+      .screen { padding: 16px; background: #0f1115; min-height: 300px; }
+      .log { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 12px; }
+      .log li { display: flex; gap: 9px; align-items: baseline; color: var(--muted); }
+      .log li b { color: var(--text); font-weight: 600; }
+      .log time { color: #5c667a; font-variant-numeric: tabular-nums; flex: 0 0 54px; }
+      .log li.done b { color: var(--ok); }
+      .log li.fail b { color: var(--err); }
+
+      .toast {
+        position: absolute; right: 14px; bottom: 14px; width: 300px; background: #1d222c;
+        border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: 10px;
+        padding: 10px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45); opacity: 0; transform: translateY(8px);
+        transition: opacity .25s ease, transform .25s ease; pointer-events: none;
+      }
+      .toast.show { opacity: 1; transform: none; }
+      .toast .t-title { font-weight: 600; font-size: 12.5px; }
+      .toast .t-body { color: var(--muted); font-size: 11.5px; margin-top: 2px; word-break: break-all; }
+      .toast.err { border-left-color: var(--err); }
+      .stage { position: relative; }
+
+      iframe { border: 0; width: 100%; height: 640px; }
+      .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      button.demo {
+        background: #1e2430; color: var(--text); border: 1px solid var(--line); border-radius: 9px;
+        padding: 7px 12px; font: inherit; font-size: 12px; cursor: pointer;
+      }
+      button.demo:hover { border-color: #3a4a63; }
+      .note { color: var(--muted); font-size: 12px; padding: 0 28px 30px; max-width: 900px; }
+      code { background: #1b1f27; padding: 1px 5px; border-radius: 5px; }
+      kbd { background: #1b1f27; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>TunePull — preview</h1>
+      <p>
+        There is no popup any more: one click on the toolbar icon downloads the current song straight
+        into the folder you configured. Click the red music icon below to watch the flow, and change
+        anything on the settings page on the right.
+      </p>
+    </header>
+
+    <div class="wrap">
+      <div class="col">
+        <h2>One-click download</h2>
+        <p class="sub">Toolbar icon, badge progress, and the finish notification.</p>
+        <div class="browser">
+          <div class="tabbar">
+            <span class="lights"><i></i><i></i><i></i></span>
+            <span class="tab">Bohemian Rhapsody - YouTube Music</span>
+          </div>
+          <div class="toolbar">
+            <span class="pill">music.youtube.com/watch?v=fJ9rUzIMcZQ</span>
+            <span class="ext" id="ext" title="Download as MP3">♪<span class="badge" id="badge"></span></span>
+          </div>
+          <div class="screen stage">
+            <ul class="log" id="log">
+              <li><time>—</time><span>Idle. Click the ♪ icon, or press <kbd>Alt+Shift+D</kbd>.</span></li>
+            </ul>
+            <div class="toast" id="toast">
+              <div class="t-title" id="toast-title"></div>
+              <div class="t-body" id="toast-body"></div>
+            </div>
+          </div>
+        </div>
+        <div class="buttons">
+          <button class="demo" data-scenario="success">Simulate download</button>
+          <button class="demo" data-scenario="slow">Simulate (slow)</button>
+          <button class="demo" data-scenario="fail">Simulate failure</button>
+          <button class="demo" data-scenario="notrack">Not on YouTube</button>
+        </div>
+      </div>
+
+      <div class="col" style="flex: 1; min-width: 560px">
+        <h2>Settings</h2>
+        <p class="sub">Folder, file name template, quality, and the helper server.</p>
+        <div class="browser" style="width: 100%">
+          <div class="tabbar">
+            <span class="lights"><i></i><i></i><i></i></span>
+            <span class="tab">TunePull — Settings</span>
+          </div>
+          <div class="screen" style="padding: 0">
+            <iframe id="options" src="options-preview.html"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="note">
+      This preview fakes the browser APIs so the real <code>options.html</code> and
+      <code>options.js</code> render unchanged. The toolbar badge and notification are recreated
+      here because a plain web page cannot host an extension's service worker or action badge. A real
+      download still needs a running helper server with <code>yt-dlp</code> and <code>ffmpeg</code>.
+    </p>
+
+    <script src="mock.js"></script>
+    <script>
+      const ext = document.getElementById("ext");
+      const badge = document.getElementById("badge");
+      const log = document.getElementById("log");
+      const toast = document.getElementById("toast");
+      const toastTitle = document.getElementById("toast-title");
+      const toastBody = document.getElementById("toast-body");
+
+      const SCENARIOS = {
+        success: { steps: [[0, "Reading the current track…"], [15, "Downloading audio…", 38], [55, "Encoding MP3…", 76], [100, "Saved"]], fail: false },
+        slow: { steps: [[0, "Reading the current track…"], [20, "Downloading audio…", 12], [50, "Downloading audio…", 47], [80, "Encoding MP3…", 83], [100, "Saved"]], fail: false },
+        fail: { steps: [[0, "Reading the current track…"], [25, "Downloading audio…", 60]], fail: true },
+        notrack: { notrack: true },
+      };
+
+      let running = false;
+
+      function setBadge(text, kind = "") {
+        badge.textContent = text;
+        badge.className = "badge" + (kind ? " " + kind : "");
+      }
+
+      function addLine(text, cls = "") {
+        const li = document.createElement("li");
+        li.className = cls;
+        li.innerHTML = `<time>${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><span>${text}</span>`;
+        log.appendChild(li);
+      }
+
+      function showToast(title, body, kind = "") {
+        toastTitle.textContent = title;
+        toastBody.textContent = body;
+        toast.className = "toast show" + (kind ? " " + kind : "");
+        setTimeout(() => (toast.className = "toast" + (kind ? " " + kind : "")), 4200);
+      }
+
+      function reset() {
+        log.innerHTML = "";
+        setBadge("");
+      }
+
+      async function run(name) {
+        if (running) return;
+        running = true;
+        const scenario = SCENARIOS[name];
+        reset();
+
+        if (scenario.notrack) {
+          addLine("Not a YouTube tab — nothing to do.", "fail");
+          setBadge("!", "err");
+          showToast("TunePull", "Open a YouTube Music or YouTube tab first.", "err");
+          setTimeout(() => setBadge(""), 3000);
+          running = false;
+          return;
+        }
+
+        for (const [percent, label, bar] of scenario.steps) {
+          addLine(label, percent === 100 ? "done" : "");
+          if (bar != null) setBadge(bar + "%");
+          else setBadge("…");
+          await new Promise((r) => setTimeout(r, 620));
+        }
+
+        if (scenario.fail) {
+          addLine("Download failed", "fail");
+          setBadge("!", "err");
+          showToast("Download failed", "unable to download video data: HTTP Error 403: Forbidden", "err");
+          setTimeout(() => setBadge(""), 3000);
+        } else {
+          const folder = (await getFolder()) || "Downloads";
+          const name = "Queen - Bohemian Rhapsody.mp3";
+          addLine(`Saved to <b>${folder}/${name}</b>`, "done");
+          setBadge("✓", "ok");
+          showToast("Saved", `${folder}/${name}`);
+          setTimeout(() => setBadge(""), 3000);
+        }
+        running = false;
+      }
+
+      async function getFolder() {
+        try {
+          return await new Promise((resolve) => {
+            chrome.storage.sync.get({ downloadFolder: "" }, (v) => resolve(v.downloadFolder));
+          });
+        } catch {
+          return "";
+        }
+      }
+
+      ext.addEventListener("click", () => run("success"));
+      for (const button of document.querySelectorAll("button.demo")) {
+        button.addEventListener("click", () => run(button.dataset.scenario));
+      }
+    </script>
+  </body>
+</html>

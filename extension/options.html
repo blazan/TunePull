@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TunePull — Settings</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body {
+        width: auto;
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 28px 20px 60px;
+      }
+      h2 {
+        font-size: 18px;
+        margin: 22px 0 8px;
+      }
+      h2:first-of-type {
+        margin-top: 0;
+      }
+      .card {
+        padding: 16px;
+      }
+      .controls .field > span {
+        min-width: 130px;
+      }
+      input[type="text"] {
+        text-align: left;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 6px 0 0;
+      }
+      code {
+        background: var(--card-2);
+        padding: 1px 5px;
+        border-radius: 5px;
+      }
+      .preview {
+        margin: 8px 0 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .preview code {
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <h2>How it works</h2>
+    <p class="hint">
+      Play a song on YouTube Music or YouTube and click the toolbar icon (or press
+      <code>Alt+Shift+D</code>). The song is converted by a small helper program running on your own
+      computer and saved into the folder below. Everything here applies to every download — there is
+      nothing to fill in per song.
+    </p>
+
+    <h2>Helper server</h2>
+    <section class="card controls">
+      <label class="field">
+        <span>Server URL</span>
+        <input id="server-url" type="text" spellcheck="false" placeholder="http://127.0.0.1:8756" />
+      </label>
+      <label class="field">
+        <span>Access token</span>
+        <input id="server-token" type="text" spellcheck="false" placeholder="(optional)" />
+      </label>
+      <label class="field" style="align-items: flex-start">
+        <span>Trusted hosts</span>
+        <textarea
+          id="trusted-hosts"
+          rows="2"
+          spellcheck="false"
+          placeholder="raspberrypi.local, 192.168.1.50"
+          style="width: 100%; background: var(--card-2); color: var(--text); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px 8px; font: inherit"
+        ></textarea>
+      </label>
+      <p class="hint">
+        <code>localhost</code> and <code>127.0.0.1</code> always work. To run the server on another
+        machine (e.g. a Raspberry Pi), enter its hostname or IP here — comma or space separated —
+        then set the Server URL above to match.
+      </p>
+      <p class="hint">
+        Keep the helper server on a trusted network only: requests are plain HTTP, so anyone who can
+        reach the host and knows the token can use it.
+      </p>
+      <div class="row" style="margin-top: 12px">
+        <button id="test" class="primary" style="width: auto; padding: 9px 16px">Test connection</button>
+      </div>
+    </section>
+
+    <h2>Download</h2>
+    <section class="card controls">
+      <label class="field">
+        <span>Quality</span>
+        <select id="quality">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320">320 kbps</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Save to folder</span>
+        <input
+          id="download-folder"
+          type="text"
+          spellcheck="false"
+          placeholder="Music/YouTube"
+        />
+      </label>
+      <p class="hint">
+        A folder inside your browser's Downloads directory. Leave empty to save straight to
+        Downloads. Subfolders are allowed (<code>Music/YouTube</code>); it is created automatically.
+      </p>
+      <label class="field" style="margin-top: 10px">
+        <span>File name</span>
+        <input id="filename-template" type="text" spellcheck="false" placeholder="{artist} - {title}" />
+      </label>
+      <p class="hint">
+        Use <code>{title}</code>, <code>{artist}</code> and <code>{album}</code>. For example
+        <code>{artist} - {title}</code> or <code>{title}</code>.
+      </p>
+      <p class="preview">Preview: <code id="name-preview">Queen - Bohemian Rhapsody.mp3</code></p>
+      <label class="checkbox" style="margin-top: 12px">
+        <input id="ask-save" type="checkbox" />
+        <span>Ask me where to save each file</span>
+      </label>
+      <label class="checkbox">
+        <input id="notify" type="checkbox" />
+        <span>Show a notification when a download finishes</span>
+      </label>
+    </section>
+
+    <div class="row" style="margin-top: 16px">
+      <button id="save" class="primary" style="width: auto; padding: 9px 16px">Save</button>
+      <span id="status" class="status" hidden style="margin: 0; flex: 1"></span>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

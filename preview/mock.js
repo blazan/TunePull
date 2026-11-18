@@ -1,0 +1,56 @@
+// Mock chrome.* so the real options page can run outside the extension.
+// The one-click flow lives in the service worker and the toolbar badge, which a
+// plain page cannot host, so the demo page recreates that part by hand.
+const params = new URLSearchParams(location.search);
+const SERVER = params.get("server") || "http://192.168.1.50:8756";
+
+const settings = {
+  serverUrl: SERVER,
+  serverToken: "demo-token",
+  trustedHosts: ["192.168.1.50"],
+  quality: "320",
+  downloadFolder: "Music/YouTube",
+  filenameTemplate: "{artist} - {title}",
+  askWhereToSave: false,
+  notifyOnFinish: true,
+};
+
+function reply(cb, obj, delay = 40) {
+  if (typeof cb === "function") setTimeout(() => cb(obj), delay);
+  return Promise.resolve(obj);
+}
+
+window.chrome = {
+  runtime: {
+    onMessage: { addListener: () => {} },
+    openOptionsPage: () => {},
+    getURL: (path) => path,
+    sendMessage: (msg, cb) => {
+      if (msg?.type === "tunepull:ping") {
+        return reply(cb, {
+          ok: true,
+          data: { version: "1.0.0", tools: ["yt-dlp", "ffmpeg"], authRequired: true },
+        });
+      }
+      return reply(cb, { ok: false, error: "unhandled " + msg?.type });
+    },
+  },
+  storage: {
+    sync: {
+      get: (defaults, cb) => reply(cb, { ...defaults, ...settings }, 30),
+      set: (patch, cb) => {
+        Object.assign(settings, patch);
+        return reply(cb, undefined, 20);
+      },
+    },
+  },
+  notifications: { create: () => Promise.resolve("id") },
+  downloads: { onChanged: { addListener: () => {} }, download: async () => 1 },
+  action: {
+    setBadgeText: async () => {},
+    setBadgeBackgroundColor: async () => {},
+  },
+  commands: { onCommand: { addListener: () => {} } },
+  tabs: { query: async () => [{ id: 1, url: "https://music.youtube.com/watch?v=fJ9rUzIMcZQ" }] },
+  scripting: { executeScript: async () => [] },
+};

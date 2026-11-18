@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.md
+AGENTS.md
+extension/
+tools/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+preview/
