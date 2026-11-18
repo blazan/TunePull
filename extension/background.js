@@ -22,6 +22,12 @@ const POLL_INTERVAL_MS = 700;
 const activeJobs = new Map();
 /** Keys (video id / url / title) of downloads currently in flight, to dedupe clicks. */
 const inFlight = new Set();
+/** key -> { jobId, downloadId, cancelled } for the in-flight download, so a
+ * second click can stop it during either the conversion or the file transfer. */
+const inFlightJobs = new Map();
+
+/** Thrown when the user cancels; not an error, so it gets no failure notification. */
+class CancelledError extends Error {}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,6 +186,37 @@ async function pollJob(jobId) {
   return response.json();
 }
 
+/** Ask the helper server to stop a running job (best effort). */
+async function cancelJob(jobId) {
+  const settings = await getSettings();
+  const endpoint = new URL(
+    `/cancel/${encodeURIComponent(jobId)}`,
+    parseServer(settings.serverUrl, settings.trustedHosts),
+  );
+  try {
+    await fetch(endpoint, { method: "POST", headers: authHeaders(settings.serverToken) });
+  } catch {
+    // The server may already be gone; the local flow is cancelled either way.
+  }
+}
+
+/** Stop the in-flight download for `key`, whether it is converting or transferring. */
+async function cancelDownload(key) {
+  const record = inFlightJobs.get(key);
+  if (!record) return;
+  record.cancelled = true;
+  if (record.downloadId != null) {
+    // The file is already being written: stop Chrome too.
+    try {
+      await chrome.downloads.cancel(record.downloadId);
+    } catch {
+      // Already finished or gone; nothing to stop.
+    }
+  } else if (record.jobId) {
+    await cancelJob(record.jobId);
+  }
+}
+
 /** Build the file URL (token goes in the query string: downloads carry no headers). */
 async function fileUrlFor(jobId) {
   const settings = await getSettings();
@@ -248,7 +285,7 @@ function downloadErrorMessage(reason, filename) {
 }
 
 /** POST, poll, then save — the full flow for one click. */
-async function runDownload(track) {
+async function runDownload(track, key) {
   let jobId = null;
 
   try {
@@ -256,6 +293,8 @@ async function runDownload(track) {
     // trusted) is the most common error and must reach the user too.
     jobId = await startJob(track);
     activeJobs.set(jobId, { track, percent: null });
+    // Published before the first poll, so a second click can cancel immediately.
+    if (key) inFlightJobs.set(key, { jobId, downloadId: null, cancelled: false });
     refreshBadge();
 
     for (;;) {
@@ -268,8 +307,10 @@ async function runDownload(track) {
       if (job) job.percent = status.percent ?? null;
       refreshBadge();
 
+      if (inFlightJobs.get(key)?.cancelled) throw new CancelledError("Cancelled");
       if (status.state === "done") break;
       if (status.state === "error") throw new Error(status.error || "Conversion failed");
+      if (status.state === "cancelled") throw new CancelledError("Cancelled");
     }
 
     const settings = await getSettings();
@@ -285,8 +326,18 @@ async function runDownload(track) {
       conflictAction: "uniquify",
     });
 
+    // From here the file is streaming, so a cancel must stop Chrome, not the server.
+    const record = key ? inFlightJobs.get(key) : null;
+    if (record) record.downloadId = downloadId;
+    if (record?.cancelled) {
+      await chrome.downloads.cancel(downloadId).catch(() => {});
+      throw new CancelledError("Cancelled");
+    }
+
     // download() resolves when the transfer starts, not when it finishes.
     const outcome = await waitForDownload(downloadId);
+    // A cancel during the transfer may still land as "complete"; trust the flag.
+    if (record?.cancelled) throw new CancelledError("Cancelled");
     if (!outcome.ok) {
       // Cancelling the Save-as dialog is a choice, not an error.
       if (outcome.error === "USER_CANCELED") {
@@ -299,6 +350,11 @@ async function runDownload(track) {
     flashBadge("✓", "#34d399");
     await notify("Saved", filename);
   } catch (error) {
+    if (error instanceof CancelledError) {
+      // A deliberate stop: clear the badge, say nothing.
+      flashBadge("", "#ff0033");
+      return;
+    }
     flashBadge("!", "#f87171");
     await notify("Download failed", error?.message || String(error));
     throw error;
@@ -325,15 +381,24 @@ async function handleAction() {
 
   // Added synchronously, so a second click in the same tick cannot also start.
   const key = track.videoId || track.pageUrl || track.title;
+
+  // Clicking the same track again while it is running cancels it: this is the only
+  // way to stop a long conversion, since there is no popup to hold a button.
+  if (inFlightJobs.has(key)) {
+    await cancelDownload(key);
+    return;
+  }
   if (inFlight.has(key)) return;
+
   inFlight.add(key);
 
   try {
-    await runDownload(track); // errors are already surfaced by runDownload
+    await runDownload(track, key); // errors are already surfaced by runDownload
   } catch {
     // ignore: the notification has been shown
   } finally {
     inFlight.delete(key);
+    inFlightJobs.delete(key);
   }
 }
 

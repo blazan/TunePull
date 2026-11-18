@@ -33,6 +33,7 @@ const TRACK = {
 async function loadWorker({
   statuses,
   track = TRACK,
+  tracks = null,
   settings = SETTINGS,
   downloadOutcome = "complete",
   downloadDelayMs = 0,
@@ -42,13 +43,17 @@ async function loadWorker({
     notifications: [],
     badges: [],
     requests: [],
+    cancelledDownloads: [],
   };
 
   let actionHandler = null;
   let jobCounter = 0;
+  let trackIndex = 0;
+  let downloadCounter = 0;
   const statusQueue = [...statuses];
   // chrome.downloads.onChanged listeners, so the mock can report completion.
   const downloadListeners = new Set();
+  const downloadTimers = new Map();
 
   globalThis.chrome = {
     runtime: {
@@ -64,21 +69,30 @@ async function loadWorker({
     downloads: {
       download: async (opts) => {
         calls.downloads.push(opts);
-        const id = 7;
+        const id = ++downloadCounter;
         // Real Chrome reports the terminal state later, via onChanged — after the
         // worker has had a chance to subscribe. A timer (not a microtask) mirrors that.
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           const delta =
             downloadOutcome === "complete"
               ? { id, state: { current: "complete" } }
               : { id, state: { current: "interrupted" }, error: { current: downloadOutcome } };
           for (const listener of downloadListeners) listener(delta);
         }, downloadDelayMs);
+        downloadTimers.set(id, timer);
         return id;
       },
       onChanged: {
         addListener: (fn) => downloadListeners.add(fn),
         removeListener: (fn) => downloadListeners.delete(fn),
+      },
+      cancel: async (id) => {
+        calls.cancelledDownloads.push(id);
+        // Chrome reports USER_CANCELED, not "complete", when the user cancels.
+        clearTimeout(downloadTimers.get(id));
+        for (const listener of downloadListeners) {
+          listener({ id, state: { current: "interrupted" }, error: { current: "USER_CANCELED" } });
+        }
       },
     },
     notifications: {
@@ -86,11 +100,18 @@ async function loadWorker({
     },
     tabs: {
       query: async () => [{ id: 1, url: "https://music.youtube.com/watch?v=x" }],
-      sendMessage: async () => ({ ok: true, track }),
+      sendMessage: async () => ({
+        ok: true,
+        // `tracks` hands out a different song per click, for concurrency tests.
+        track: tracks ? tracks[Math.min(trackIndex++, tracks.length - 1)] : track,
+      }),
     },
     scripting: { executeScript: async () => [] },
     storage: { sync: { get: async (defaults) => ({ ...defaults, ...settings }) } },
   };
+
+  // Per-job poll counters, so two concurrent jobs advance independently.
+  const jobPolls = new Map();
 
   globalThis.fetch = async (url, opts = {}) => {
     const href = String(url);
@@ -100,7 +121,10 @@ async function loadWorker({
       return { ok: true, status: 200, json: async () => ({ jobId: `job${jobCounter}` }) };
     }
     if (href.includes("/job/")) {
-      const next = statusQueue.length > 1 ? statusQueue.shift() : statusQueue[0];
+      const id = href.split("/job/")[1].split("?")[0];
+      const seen = jobPolls.get(id) || 0;
+      jobPolls.set(id, seen + 1);
+      const next = seen < statusQueue.length - 1 ? statusQueue[seen] : statusQueue.at(-1);
       return { ok: true, status: 200, json: async () => next };
     }
     return { ok: true, status: 200, json: async () => ({}) };
@@ -261,6 +285,77 @@ test("cancelling the Save-as dialog is silent, not an error", async () => {
 
   assert.equal(calls.notifications.length, 0, "no notification when the user cancels");
   assert.ok(!calls.badges.includes("!"), `no failure badge, got ${calls.badges}`);
+});
+
+test("a second click cancels a conversion that is still running", async () => {
+  const { calls, run } = await loadWorker({
+    // Stays "running" forever: only a cancel ends it.
+    statuses: [{ state: "running", stage: "Encoding MP3", percent: 95 }],
+  });
+
+  const first = run();
+  await settle(1000); // let the job start and the first poll tick pass
+  await run(); // second click = cancel
+  await first;
+  await settle();
+
+  assert.ok(
+    calls.requests.some((r) => r.href.includes("/cancel/") && r.method === "POST"),
+    `expected a POST /cancel, got ${JSON.stringify(calls.requests)}`,
+  );
+  assert.equal(calls.downloads.length, 0, "no file was fetched");
+  assert.equal(calls.notifications.length, 0, "a cancel is silent, not a failure");
+  assert.ok(!calls.badges.includes("!"), `no failure badge, got ${calls.badges}`);
+});
+
+test("a second click stops the file transfer once it has started", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    downloadDelayMs: 5000, // keep the transfer "in progress"
+  });
+
+  const first = run();
+  await settle(1000); // let the transfer start
+  assert.equal(calls.downloads.length, 1, "the transfer started");
+  await run(); // second click = cancel
+  await first;
+  await settle();
+
+  assert.deepEqual(calls.cancelledDownloads, [1], "Chrome was told to stop the download");
+  assert.equal(calls.notifications.length, 0, "a cancel is silent");
+});
+
+test("two different songs download at the same time, without waiting", async () => {
+  const second = {
+    title: "Another One Bites the Dust",
+    artist: "Queen",
+    album: "The Game",
+    videoId: "rY0WxgSXdEE",
+    pageUrl: "https://music.youtube.com/watch?v=rY0WxgSXdEE",
+  };
+  const { calls, run, getJobCount } = await loadWorker({
+    // Each job reports "running" until its own second poll, then "done".
+    statuses: [
+      { state: "running", stage: "Downloading audio", percent: 30 },
+      { state: "done", stage: "Ready", percent: 100 },
+    ],
+    tracks: [TRACK, second],
+    downloadDelayMs: 0,
+  });
+
+  // Two clicks, back to back, without awaiting the first.
+  const first = run();
+  await settle(20); // let the first job register, but not finish
+  const both = Promise.all([first, run()]);
+  await settle();
+  await both;
+  await settle(1200); // let both poll loops finish (700ms tick each)
+
+  assert.equal(getJobCount(), 2, "both songs were submitted to the server");
+  assert.equal(calls.downloads.length, 2, "both files were saved");
+  const titles = calls.notifications.map((n) => n.message).join(" | ");
+  assert.match(titles, /Bohemian Rhapsody/, "first song saved");
+  assert.match(titles, /Another One Bites the Dust/, "second song saved");
 });
 
 test("success is announced only after Chrome reports completion", async () => {

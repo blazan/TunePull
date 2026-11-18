@@ -75,7 +75,7 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.0.1
+TunePull helper server v1.0.2
   listening on http://127.0.0.1:8756
   access token: 5f3c...9a
   -> paste this into the extension's settings page
@@ -87,6 +87,7 @@ Keep this window open while you download. Useful flags:
 | --- | --- |
 | `--port 8756` | Change the port (keep it in sync with the extension). |
 | `--host 127.0.0.1` | Bind address. Leave it on loopback unless you know why. |
+| `--max-jobs 3` | How many downloads run at once. Extra clicks queue and start as slots free. |
 | `--token <value>` | Use a fixed token instead of a random one. |
 | `--no-auth` | Disable the token entirely (only for a trusted machine). |
 | `--origin '*'` | Value for `Access-Control-Allow-Origin`. |
@@ -110,6 +111,20 @@ Keep this window open while you download. Useful flags:
 2. **Click the toolbar icon** (or press `Alt+Shift+D`).
 3. The icon shows progress; when it finishes you get a notification naming the saved
    file. Repeat downloads really are a single click.
+
+Start as many songs as you like, one after another — you do not have to wait for one to
+finish before starting the next. Each runs in its own job; the badge shows `+N` while
+several are in flight, and each one notifies you when it is saved. The server runs up to
+`--max-jobs` at once (3 by default); anything beyond that waits its turn as *Queued*.
+
+To stop a download you no longer want, click the toolbar icon again **while the same
+song is still downloading**. The first click starts it, the second click cancels it:
+the server kills yt-dlp/ffmpeg, and if the file is already transferring, Chrome's
+download is cancelled too. Cancelling is silent — no failure notification.
+
+A note on long videos: a multi-hour DJ mix can take minutes to re-encode to MP3. The
+progress sits at `95%` (the "Encoding MP3" stage) for that whole time; it is working, not
+stuck. If you would rather not wait, click again to cancel.
 
 ## Settings
 
@@ -226,7 +241,8 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 | --- | --- | --- |
 | `GET` | `/health` | `{version, tools, authRequired}` — used to show the connection status. |
 | `POST` | `/download` | Body `{url\|videoId, title, artist, album, quality}` → `{jobId}`. |
-| `GET` | `/job/<id>` | `{state, stage, percent, filename, error}`. |
+| `GET` | `/job/<id>` | `{state, stage, percent, filename, error, cancelled}`. |
+| `POST` | `/cancel/<id>` | Stop a queued or running job (kills yt-dlp/ffmpeg). |
 | `GET` | `/file/<id>` | The finished MP3. |
 
 ## Safety and privacy
@@ -271,6 +287,11 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
   extension used to announce success as soon as the transfer *started*, so a broken
   download could show both "Saved" and a Chrome error. It now waits for Chrome to
   report the real outcome and reports a failure with the reason instead.
+- **A download sits at `95%` for ages and cannot be stopped** — fixed in 1.0.2. `95%`
+  is the "Encoding MP3" stage, which for a multi-hour mix can genuinely take minutes.
+  Before 1.0.2 there was no way to cancel it. Now **click the toolbar icon again while
+  the same song is downloading** to cancel: the server kills yt-dlp/ffmpeg and the
+  Chrome download is stopped too.
 - **"No supported JavaScript runtime could be found"** — recent yt-dlp versions use a
   JS runtime to fully solve YouTube; without one, formats go missing and some
   downloads fail at random. The published image bundles `deno` and `yt-dlp-ejs`

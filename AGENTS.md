@@ -54,6 +54,19 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
 * `last_error` appends a plain-language `error_hint` for YouTube-side conditions
   (unavailable/private/region/age). Add new patterns to `_ERROR_HINTS` rather than
   matching in the extension, so the logic stays in one place and is unit-tested.
+* Jobs run **concurrently**, not queued one at a time: each `POST /download` spawns a
+  daemon thread, and `JobStore`'s `BoundedSemaphore` (`--max-jobs`, default 3) caps how
+  many yt-dlp/ffmpeg processes run at once; extra jobs wait as `state="queued"`. A queued
+  job polls the semaphore with a timeout so it stays cancellable while it waits.
+* Cancel is a two-part contract. The extension cancels by POSTing `/cancel/<id>`, which
+  sets `job.cancelled` and SIGKILLs the child's process group (yt-dlp *and* its ffmpeg
+  child, via `start_new_session=True`). `run_job` then sees the flag and settles the job
+  as `state="cancelled"`. Once the file is transferring, the extension instead calls
+  `chrome.downloads.cancel` — the server has nothing left to do. Both paths are silent
+  (`CancelledError`, no failure notification).
+* Progress is a coarse model: download maps 0–100% onto 0–90, and the ffmpeg re-encode
+  pins the bar at `95%` with no further output. A multi-hour mix legitimately sits at
+  `95%` for minutes; that is why cancel matters more than a better percentage.
 
 ## Docker / remote host
 
@@ -104,9 +117,11 @@ the transfer *starts* — code must not treat that as success. Keep `config.js` 
 of `chrome.*` at import time so the helper tests stay runnable.
 
 `python3 tests/test_server.py` covers the helper server: the filename-header
-helpers, the YouTube error hints, and a full `POST /download` → poll → `/file/<id>`
-round-trip. It puts fake `yt-dlp`/`ffmpeg` on `PATH`, so it needs no network and no
-real encoding. Run both suites before pushing.
+helpers, the YouTube error hints, a full `POST /download` → poll → `/file/<id>`
+round-trip, and the concurrency/cancel contract (two jobs overlap, `/cancel` stops a
+running job, `--max-jobs` queues extras, and a queued job can be cancelled). It puts
+fake `yt-dlp`/`ffmpeg` on `PATH`, so it needs no network and no real encoding — the
+`make_slow_fakes` variant sleeps so overlap is observable. Run both suites before pushing.
 
 ## Testing without network
 

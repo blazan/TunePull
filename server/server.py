@@ -11,6 +11,7 @@ Endpoints
     GET  /health          -> {version, tools}
     POST /download        -> {jobId}          body: {url|videoId, title, artist, album, quality}
     GET  /job/<id>        -> {state, stage, percent, filename, error}
+    POST /cancel/<id>     -> stop a running job
     GET  /file/<id>       -> the finished .mp3
 
 It binds to loopback only. A token is generated on first run and printed; paste
@@ -27,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,10 +40,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 MAX_BODY_BYTES = 64 * 1024
 JOB_TTL_SECONDS = 60 * 60  # finished jobs are cleaned up after an hour
+
+
+class JobCancelled(Exception):
+    """Raised inside run_job when the user cancels a download."""
+
+
+def terminate_process(process: subprocess.Popen | None) -> None:
+    """Stop yt-dlp and the ffmpeg it spawned, then reap them."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        # start_new_session put the child in its own group, so this reaches ffmpeg too.
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        process.wait(timeout=5)
+
 
 # ---------------------------------------------------------------------------
 # Job registry
@@ -53,12 +79,15 @@ class Job:
         self.id = job_id
         self.suggested_name = suggested_name
         self.dir = directory
-        self.state = "queued"  # queued | running | done | error
+        self.state = "queued"  # queued | running | done | error | cancelled
         self.stage = "Queued"
         self.percent: float | None = None
         self.error: str | None = None
         self.path: Path | None = None
         self.finished_at: float | None = None
+        # The yt-dlp child, so a cancel or a shutdown can stop it.
+        self.process: subprocess.Popen | None = None
+        self.cancelled = False
 
     def as_dict(self) -> dict:
         return {
@@ -68,14 +97,24 @@ class Job:
             "percent": self.percent,
             "filename": self.suggested_name,
             "error": self.error,
+            "cancelled": self.cancelled,
         }
 
 
 class JobStore:
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, max_jobs: int = 3) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._workdir = workdir
+        # Caps concurrent yt-dlp/ffmpeg processes, so a burst of clicks cannot
+        # swamp a Raspberry Pi. Extra jobs wait as "Queued" until a slot frees.
+        self._slots = threading.BoundedSemaphore(max(1, max_jobs))
+
+    def acquire_slot(self, timeout: float | None = None) -> bool:
+        return self._slots.acquire(timeout=timeout)
+
+    def release_slot(self) -> None:
+        self._slots.release()
 
     def create(self, suggested_name: str) -> Job:
         job_id = uuid.uuid4().hex
@@ -88,6 +127,28 @@ class JobStore:
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def cancel(self, job_id: str) -> Job | None:
+        """Stop a running job. Returns the job, or None if it is unknown."""
+        job = self.get(job_id)
+        if job is None:
+            return None
+        job.cancelled = True
+        # Kill off the request thread: SIGTERM needs a grace period before SIGKILL,
+        # and the caller (the extension) should not wait for that.
+        threading.Thread(
+            target=terminate_process, args=(job.process,), daemon=True
+        ).start()
+        return job
+
+    def cancel_all(self) -> None:
+        """Stop every running job (used on shutdown, so ffmpeg is not orphaned)."""
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            if job.finished_at is None:
+                job.cancelled = True
+                terminate_process(job.process)
 
     def sweep(self) -> None:
         """Delete files (and records) for jobs that finished a while ago."""
@@ -105,6 +166,7 @@ class JobStore:
         with self._lock:
             job = self._jobs.pop(job_id, None)
         if job:
+            terminate_process(job.process)
             shutil.rmtree(job.dir, ignore_errors=True)
 
 
@@ -252,85 +314,116 @@ def content_disposition(name: str) -> str:
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quoted}"
 
 
-def run_job(job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str) -> None:
+def run_job(
+    job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str, store: JobStore
+) -> None:
     quality = str(payload.get("quality") or "320")
     if quality not in ALLOWED_QUALITIES:
         quality = "320"
 
     try:
-        job.state = "running"
-        target = build_target_url(payload)
-        job_dir = job.dir
-        job.path = job_dir / "output.mp3"
+        # Wait for a free slot without blocking a cancel: a queued job must still be
+        # stoppable, so poll the flag rather than sitting on the semaphore.
+        while not store.acquire_slot(timeout=0.2):
+            if job.cancelled:
+                raise JobCancelled()
 
-        command = [
-            *yt_dlp,
-            "--no-playlist",
-            "--no-part",
-            "--newline",
-            "--no-warnings",
-            "--ffmpeg-location",
-            ffmpeg,
-            "-f",
-            "bestaudio/best",
-            "--extract-audio",
-            "--audio-format",
-            "mp3",
-            "--audio-quality",
-            f"{quality}K",
-            "-o",
-            str(job_dir / "source.%(ext)s"),
-            "--paths",
-            f"temp:{job_dir}",
-            target,
-        ]
-
-        job.stage = "Downloading audio"
-        job.percent = 0.0
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        assert process.stdout is not None
-        tail: list[str] = []
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            tail.append(line)
-            if len(tail) > 40:
-                del tail[0]
-            match = PROGRESS_RE.search(line)
-            if match:
-                # Download is the bulk of the wall-clock time, so map it to 0-90%.
-                job.percent = round(min(float(match.group(1)) * 0.9, 90.0), 1)
-            elif "[ExtractAudio]" in line or "[ffmpeg]" in line:
-                job.stage = "Encoding MP3"
-                job.percent = 95.0
-
-        code = process.wait()
-        if code != 0:
-            raise RuntimeError(last_error(tail) or f"yt-dlp exited with code {code}")
-
-        produced = job_dir / "output.mp3"
-        if not produced.exists():
-            candidates = sorted(job_dir.glob("*.mp3"))
-            if not candidates:
-                raise RuntimeError("No MP3 file was produced")
-            candidates[0].rename(produced)
-
-        job.path = produced
-        job.state = "done"
-        job.stage = "Ready"
-        job.percent = 100.0
+        try:
+            _run_job_inner(job, payload, yt_dlp, ffmpeg, quality)
+        finally:
+            store.release_slot()
+    except JobCancelled:
+        job.state = "cancelled"
+        job.stage = "Cancelled"
+        job.error = "Cancelled"
     except Exception as exc:  # surface the message to the user
         job.state = "error"
         job.stage = "Failed"
         job.error = str(exc)
     finally:
+        job.process = None
         job.finished_at = time.time()
+
+
+def _run_job_inner(
+    job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str, quality: str
+) -> None:
+    job.state = "running"
+    target = build_target_url(payload)
+    job_dir = job.dir
+    job.path = job_dir / "output.mp3"
+
+    command = [
+        *yt_dlp,
+        "--no-playlist",
+        "--no-part",
+        "--newline",
+        "--no-warnings",
+        "--ffmpeg-location",
+        ffmpeg,
+        "-f",
+        "bestaudio/best",
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        f"{quality}K",
+        "-o",
+        str(job_dir / "source.%(ext)s"),
+        "--paths",
+        f"temp:{job_dir}",
+        target,
+    ]
+
+    job.stage = "Downloading audio"
+    job.percent = 0.0
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        # Own process group, so a cancel can take ffmpeg (yt-dlp's child) with it.
+        start_new_session=True,
+    )
+    job.process = process
+
+    assert process.stdout is not None
+    tail: list[str] = []
+    for line in process.stdout:
+        line = line.rstrip("\n")
+        tail.append(line)
+        if len(tail) > 40:
+            del tail[0]
+        match = PROGRESS_RE.search(line)
+        if match:
+            # Download is the bulk of the wall-clock time, so map it to 0-90%.
+            job.percent = round(min(float(match.group(1)) * 0.9, 90.0), 1)
+        elif "[ExtractAudio]" in line or "[ffmpeg]" in line:
+            # ffmpeg re-encodes the whole track here; on a multi-hour mix this
+            # is minutes of wall time with no further progress output.
+            job.stage = "Encoding MP3"
+            job.percent = 95.0
+
+    code = process.wait()
+    if process.stdout:
+        process.stdout.close()
+    if job.cancelled:
+        raise JobCancelled()
+    if code != 0:
+        raise RuntimeError(last_error(tail) or f"yt-dlp exited with code {code}")
+
+    produced = job_dir / "output.mp3"
+    if not produced.exists():
+        candidates = sorted(job_dir.glob("*.mp3"))
+        if not candidates:
+            raise RuntimeError("No MP3 file was produced")
+        candidates[0].rename(produced)
+
+    job.path = produced
+    job.state = "done"
+    job.stage = "Ready"
+    job.percent = 100.0
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +534,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+
+        if path.startswith("/cancel/"):
+            if not self._require_auth():
+                return
+            job = self.store.cancel(path[len("/cancel/") :])
+            if not job:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Unknown job"})
+                return
+            self._send_json(HTTPStatus.OK, job.as_dict())
+            return
+
         if path != "/download":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -470,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
         job = self.store.create(suggested_filename(payload))
         threading.Thread(
             target=run_job,
-            args=(job, payload, self.yt_dlp, self.ffmpeg),
+            args=(job, payload, self.yt_dlp, self.ffmpeg, self.store),
             daemon=True,
         ).start()
         self._send_json(HTTPStatus.ACCEPTED, {"jobId": job.id, "filename": job.suggested_name})
@@ -498,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobStore]:
     workdir = Path(tempfile.mkdtemp(prefix="tunepull-"))
-    store = JobStore(workdir)
+    store = JobStore(workdir, max_jobs=getattr(args, "max_jobs", 3))
 
     handler = type("BoundHandler", (Handler,), {})
     handler.store = store
@@ -517,6 +621,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Helper server for the TunePull extension.")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8756, help="port (default: 8756)")
+    parser.add_argument(
+        "--max-jobs",
+        type=int,
+        default=3,
+        help="how many downloads may run at once (default: 3)",
+    )
     parser.add_argument("--token", default="", help="fixed access token (default: random)")
     parser.add_argument("--no-auth", action="store_true", help="disable the access token")
     parser.add_argument(
@@ -557,6 +667,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nshutting down")
     finally:
+        # Kill any in-flight yt-dlp/ffmpeg before the workdir goes away, so a long
+        # encode cannot keep running (and writing) after the server has exited.
+        store.cancel_all()
         server.server_close()
         shutil.rmtree(store._workdir, ignore_errors=True)
     return 0
