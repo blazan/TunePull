@@ -19,6 +19,7 @@ python server/server.py --no-auth       # quick local testing without a token
 python tools/make_icons.py              # regenerate extension/icons/*.png
 python -m py_compile server/server.py   # syntax check
 node --check extension/background.js    # syntax check (any extension JS file)
+python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpeg)
 ```
 
 ## Conventions and gotchas
@@ -42,6 +43,17 @@ node --check extension/background.js    # syntax check (any extension JS file)
   filename: it strips `..` and absolute paths, which the downloads API rejects.
 * `chrome.downloads` writes relative to the browser's Downloads directory, so the
   user's "folder" setting is a relative path, never absolute.
+* `http.server` encodes header values as **latin-1**. Any filename that reaches a
+  header must go through `ascii_filename` / `content_disposition`; a raw emoji or CJK
+  character raises `UnicodeEncodeError` *after* the status line is sent, so the
+  response aborts mid-transfer and the browser reports a broken connection. This was
+  the cause of the "Check your internet connection" reports.
+* yt-dlp needs a JS runtime (`deno`) plus `yt-dlp-ejs` to solve YouTube's signature
+  and `n` challenges. Without them it only warns, then silently drops formats, so
+  failures look random. The image bundles both; keep them when editing the Dockerfile.
+* `last_error` appends a plain-language `error_hint` for YouTube-side conditions
+  (unavailable/private/region/age). Add new patterns to `_ERROR_HINTS` rather than
+  matching in the extension, so the logic stays in one place and is unit-tested.
 
 ## Docker / remote host
 
@@ -58,6 +70,9 @@ node --check extension/background.js    # syntax check (any extension JS file)
   the token and a container healthcheck should not need the secret.
 * `COPY --chown=appuser:appuser` is deliberate: the build environment's umask can
   produce mode `600`, and the image runs as a non-root user that must read the file.
+* The `deno` binary is copied from `denoland/deno:bin-2.9.8` (multi-arch) in a build
+  stage — deliberately not `curl | sh`, so the build stays reproducible and offline-safe
+  apart from the base images.
 * Client side: set Server URL to `http://<pi-ip>:8756` and add the host under
   Trusted hosts. Saving the URL auto-adds the hostname.
 
@@ -84,6 +99,11 @@ rendering only — never point it at real downloads.
 `extension/lib/config.js` (templates, path building, host trust). These run in
 plain Node — keep `config.js` free of `chrome.*` at import time so they stay
 runnable.
+
+`python3 tests/test_server.py` covers the helper server: the filename-header
+helpers, the YouTube error hints, and a full `POST /download` → poll → `/file/<id>`
+round-trip. It puts fake `yt-dlp`/`ffmpeg` on `PATH`, so it needs no network and no
+real encoding. Run both suites before pushing.
 
 ## Testing without network
 

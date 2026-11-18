@@ -36,9 +36,9 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 MAX_BODY_BYTES = 64 * 1024
 JOB_TTL_SECONDS = 60 * 60  # finished jobs are cleaned up after an hour
@@ -129,6 +129,18 @@ def find_yt_dlp() -> list[str] | None:
     return [sys.executable, "-m", "yt_dlp"]
 
 
+def find_js_runtime() -> str | None:
+    """Return the name of a JavaScript runtime yt-dlp can use, if any.
+
+    yt-dlp shells out to one of these to solve YouTube's signature/n challenges.
+    Without it, extraction still "works" but silently loses formats.
+    """
+    for name in ("deno", "bun", "node", "quickjs"):
+        if find_executable(name):
+            return name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Download + conversion
 # ---------------------------------------------------------------------------
@@ -164,7 +176,49 @@ def last_error(lines: list[str]) -> str:
     """Return yt-dlp's most useful error line so the user can see a reason."""
     for line in reversed(lines):
         if line.startswith("ERROR:"):
-            return line[len("ERROR:") :].strip()[:300]
+            message = line[len("ERROR:") :].strip()[:300]
+            hint = error_hint(message)
+            return f"{message} — {hint}" if hint else message
+    return ""
+
+
+# YouTube-side conditions that no amount of retrying or updating will fix. They are
+# common on music videos (label/region licensing), so say so instead of leaving the
+# user to think the helper server is broken.
+_ERROR_HINTS = (
+    (
+        ("video unavailable", "this video is not available", "not available in your country"),
+        "YouTube is blocking this video (rights or region). Another upload of the same "
+        "song may work.",
+    ),
+    (
+        ("private video",),
+        "the uploader set this video to private.",
+    ),
+    (
+        ("video has been removed", "no longer available"),
+        "the video was deleted by the uploader.",
+    ),
+    (
+        ("sign in to confirm", "confirm you're not a bot", "confirm you are not a bot"),
+        "YouTube is asking for a sign-in; this server has no account. Try again later.",
+    ),
+    (
+        ("age-restricted", "age restricted", "confirm your age", "inappropriate for some users"),
+        "the video is age-restricted, which needs a signed-in account.",
+    ),
+    (
+        ("premieres in", "upcoming"),
+        "the video has not premiered yet.",
+    ),
+)
+
+
+def error_hint(message: str) -> str:
+    lowered = message.lower()
+    for needles, hint in _ERROR_HINTS:
+        if any(needle in lowered for needle in needles):
+            return hint
     return ""
 
 
@@ -173,6 +227,29 @@ def suggested_filename(payload: dict) -> str:
     artist = clean_name(payload.get("artist"), "")
     stem = clean_name(f"{artist} - {title}" if artist else title, "audio")
     return f"{stem}.mp3"
+
+
+def ascii_filename(name: str) -> str:
+    """Best-effort ASCII version of a filename, for headers that cannot hold UTF-8.
+
+    http.server encodes header values as latin-1, so anything outside it (emoji,
+    CJK, …) raises UnicodeEncodeError and aborts the response mid-flight.
+    """
+    # Strip the ASCII control characters that would break the header syntax.
+    printable = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    ascii_only = printable.encode("ascii", "replace").decode("ascii")
+    # A title made entirely of non-ASCII characters degrades to "?.mp3"; prefer a
+    # generic name over one the user cannot recognise.
+    if not re.search(r"[A-Za-z0-9]", ascii_only):
+        return "audio.mp3"
+    return ascii_only
+
+
+def content_disposition(name: str) -> str:
+    """RFC 6266/5987 header carrying both an ASCII and a UTF-8 filename."""
+    fallback = ascii_filename(name).replace("\\", "_").replace('"', "'")
+    quoted = quote(name, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quoted}"
 
 
 def run_job(job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str) -> None:
@@ -269,6 +346,7 @@ class Handler(BaseHTTPRequestHandler):
     token: str | None
     yt_dlp: list[str]
     ffmpeg: str
+    js_runtime: str | None
     origin_allow: str
 
     def log_message(self, fmt: str, *args) -> None:  # keep the console readable
@@ -333,7 +411,13 @@ class Handler(BaseHTTPRequestHandler):
                 tools.append("ffmpeg")
             self._send_json(
                 HTTPStatus.OK,
-                {"version": VERSION, "tools": tools, "authRequired": bool(self.token)},
+                {
+                    "version": VERSION,
+                    "tools": tools,
+                    # Missing JS runtime is not fatal, but it makes downloads flaky.
+                    "jsRuntime": self.js_runtime or "",
+                    "authRequired": bool(self.token),
+                },
             )
             return
 
@@ -403,10 +487,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "audio/mpeg")
         self.send_header("Content-Length", str(size))
-        self.send_header(
-            "Content-Disposition", f'attachment; filename="{job.suggested_name}"'
-        )
-        self.send_header("X-Suggested-Filename", job.suggested_name)
+        self.send_header("Content-Disposition", content_disposition(job.suggested_name))
+        # Custom headers are encoded latin-1 by http.server, so keep this ASCII.
+        self.send_header("X-Suggested-Filename", ascii_filename(job.suggested_name))
         self._cors()
         self.end_headers()
         with job.path.open("rb") as handle:
@@ -422,6 +505,7 @@ def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobSto
     handler.token = None if args.no_auth else (args.token or secrets.token_urlsafe(24))
     handler.yt_dlp = find_yt_dlp()
     handler.ffmpeg = find_executable("ffmpeg") or ""
+    handler.js_runtime = find_js_runtime()
     handler.origin_allow = args.origin or "*"
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
@@ -455,6 +539,13 @@ def main() -> int:
     print(f"  listening on http://{args.host}:{args.port}")
     if missing:
         print(f"  !! missing tools: {', '.join(missing)} (downloads will fail until installed)")
+    if not handler.js_runtime:
+        print(
+            "  !! no JavaScript runtime (deno/node/bun) found: YouTube extraction may\n"
+            "     miss formats. Install deno and restart. yt-dlp-ejs is also recommended."
+        )
+    else:
+        print(f"  javascript runtime: {handler.js_runtime}")
     if handler.token:
         print(f"  access token: {handler.token}")
         print("  -> paste this into the extension's settings page")

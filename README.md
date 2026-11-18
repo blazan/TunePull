@@ -75,7 +75,7 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.0.0
+TunePull helper server v1.0.1
   listening on http://127.0.0.1:8756
   access token: 5f3c...9a
   -> paste this into the extension's settings page
@@ -133,6 +133,9 @@ on, and it does the CPU-heavy encoding instead of your laptop.
 
 A prebuilt image is published for both **arm64** (Pi 3/4/5 on a 64-bit OS) and
 **amd64**, so Docker pulls the right one automatically — nothing to build on the Pi.
+The image bundles everything the server needs: `yt-dlp`, `ffmpeg`, and a `deno`
+JavaScript runtime (plus `yt-dlp-ejs`) that yt-dlp uses to solve YouTube's
+challenges.
 
 ### Start it
 
@@ -252,12 +255,22 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 - **Download fails with a yt-dlp error** — the notification shows yt-dlp's own message
   (e.g. `HTTP Error 403: Forbidden`, `This video is unavailable`). YouTube changes
   often; update with `pip install -U yt-dlp` (or rebuild the Docker image).
+- **"This video is not available" / "Video unavailable"** — YouTube is refusing that
+  specific video, usually because the label restricts it by region or only allows it
+  in certain apps. TunePull cannot bypass this, and it is not a server fault: try a
+  different upload of the same song.
 - **`403 Forbidden` on the media stream** — YouTube is refusing the download from that
   IP. This is common on cloud/VPS or datacenter addresses. Run the server on a normal
   home connection (e.g. the Pi on your LAN).
+- **A download stops part-way and Chrome says "Check your internet connection"** — this
+  was a bug: a song title containing emoji or non-Latin characters crashed the server
+  while it sent the file, so the browser saw the transfer break. Fixed in 1.0.1
+  (`Content-Disposition` now uses the RFC 6266 UTF-8 form). Update the image:
+  `docker compose pull && docker compose up -d`.
 - **"No supported JavaScript runtime could be found"** — recent yt-dlp versions use a
-  JS runtime to fully solve YouTube. Add `deno` to the image (see the commented lines
-  in the `Dockerfile`) if you see missing-format warnings.
+  JS runtime to fully solve YouTube; without one, formats go missing and some
+  downloads fail at random. The published image bundles `deno` and `yt-dlp-ejs`
+  (since 1.0.1). If you build your own image, keep those two lines in the `Dockerfile`.
 - **`Your kernel does not support memory limit capabilities`** — a harmless Docker
   warning: Raspberry Pi OS disables the memory cgroup controller by default, so the
   `mem_limit` line is discarded. The server still works. Enable it by adding
@@ -277,6 +290,7 @@ node --check extension/background.js    # syntax check (any extension JS file)
 
 # tests (pure helpers + service-worker flow)
 node --test "tests/*.test.mjs"
+python3 tests/test_server.py            # helper server (fake yt-dlp/ffmpeg)
 
 # regenerate icons and the browser preview
 python tools/make_icons.py
