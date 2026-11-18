@@ -110,6 +110,12 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
 * Push a new build with:
   `docker buildx build --platform linux/amd64,linux/arm64 -t <user>/tunepull-server:latest --push .`
   (buildkit bundles QEMU, so arm64 builds work from an amd64 host).
+* Never publish with a plain `docker build`/`docker push`: that produces an
+  amd64-only image, and the Pi then fails to pull with "no matching manifest for
+  linux/arm64". Always use the `buildx --platform linux/amd64,linux/arm64` form
+  above, and confirm with
+  `docker manifest inspect <user>/tunepull-server:latest | grep -A2 architecture`
+  that both architectures are listed.
 * The `HEALTHCHECK` probes the TCP port, not `/health`, because `/health` requires
   the token and a container healthcheck should not need the secret.
 * `COPY --chown=appuser:appuser` is deliberate: the build environment's umask can
