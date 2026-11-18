@@ -276,8 +276,9 @@ back.
 | --- | --- |
 | `extension/content.js` | Reads the current track (title, artist, album, video id) from the player bar / player response. |
 | `extension/background.js` | Service worker: on an icon click it reads the track, starts a job, polls it, then points `chrome.downloads` at the finished file — into the configured folder. Drives the toolbar badge and notifications. |
-| `extension/options.*` | All settings: helper-server URL and token, trusted hosts, quality, download folder, file-name template, notifications. |
+| `extension/options.*` | All settings: helper-server URL and token, trusted hosts, quality, download folder, file-name template, notifications, cookie sync. |
 | `extension/lib/config.js` | Shared helpers: settings defaults, host trust checks, file-name templates, download-path building. |
+| `extension/lib/cookies.js` | Reads YouTube cookies from the browser and formats them as a Netscape `cookies.txt` for the server. |
 | `extension/styles.css` | Shared styles for the options page. |
 | `server/server.py` | Stdlib-only HTTP server: runs `yt-dlp` + `ffmpeg`, tracks jobs, streams the MP3 or MP4. |
 | `tools/make_icons.py` | Regenerates the PNG icons (standard library only). |

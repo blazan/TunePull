@@ -17,6 +17,7 @@ const settings = {
   videoFilenameTemplate: "{artist} - {title}",
   askWhereToSave: false,
   notifyOnFinish: true,
+  syncCookies: false,
 };
 
 function reply(cb, obj, delay = 40) {
@@ -33,8 +34,19 @@ window.chrome = {
       if (msg?.type === "tunepull:ping") {
         return reply(cb, {
           ok: true,
-          data: { version: "1.0.0", tools: ["yt-dlp", "ffmpeg"], authRequired: true },
+          data: {
+            version: "1.3.0",
+            tools: ["yt-dlp", "ffmpeg"],
+            authRequired: true,
+            cookies: false,
+          },
         });
+      }
+      if (msg?.type === "tunepull:syncCookies") {
+        return reply(cb, { ok: true, data: { ok: true, cookies: true, count: 6 } });
+      }
+      if (msg?.type === "tunepull:clearCookies") {
+        return reply(cb, { ok: true, data: { ok: true, cookies: false, count: 0 } });
       }
       return reply(cb, { ok: false, error: "unhandled " + msg?.type });
     },
