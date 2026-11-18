@@ -21,7 +21,10 @@ services:
       # Leave it empty to get a random token printed in the logs instead.
       - TUNEPULL_TOKEN=${TUNEPULL_TOKEN:-change-me-please}
       # Optional: a Netscape cookies.txt exported from a logged-in browser, used to
-      # clear YouTube's "Sign in to confirm you're not a bot" wall. To enable it:
+      # clear YouTube's "Sign in to confirm you're not a bot" wall. Usually you do
+      # NOT need this: the extension can send its cookies automatically (Options →
+      # YouTube sign-in (cookies)), which is the easy path when Chrome runs on
+      # another machine. To use a file instead:
       #   1. put cookies.txt next to this file,
       #   2. uncomment the two lines below (env + volume),
       #   3. add "--cookies", "/cookies/cookies.txt" to the `command` list.
