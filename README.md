@@ -250,7 +250,7 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 | `extension/options.*` | All settings: helper-server URL and token, trusted hosts, quality, download folder, file-name template, notifications. |
 | `extension/lib/config.js` | Shared helpers: settings defaults, host trust checks, file-name templates, download-path building. |
 | `extension/styles.css` | Shared styles for the options page. |
-| `server/server.py` | Stdlib-only HTTP server: runs `yt-dlp` + `ffmpeg`, tracks jobs, streams the MP3. |
+| `server/server.py` | Stdlib-only HTTP server: runs `yt-dlp` + `ffmpeg`, tracks jobs, streams the MP3 or MP4. |
 | `tools/make_icons.py` | Regenerates the PNG icons (standard library only). |
 | `tools/make_preview.py` | Builds the `preview/` copy of the UI from `extension/`. |
 | `tests/*.test.mjs` | `node --test` suites for the pure helpers and the service-worker flow. |
