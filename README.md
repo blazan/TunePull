@@ -1,17 +1,18 @@
 # TunePull
 
-**One click on the toolbar icon downloads the song you are playing on YouTube Music (or YouTube) as an MP3.**
+**One click on the toolbar icon downloads the song you are playing on YouTube Music (or YouTube) as an MP3 — or the whole video as an MP4.**
 
 No popup, no per-song dialog. You configure the destination folder, quality and file
-name once in the settings, and after that every download is a single click.
+name once in the settings, and after that every download is a single click. A single
+setting chooses whether a click saves **audio (MP3)** or **video (MP4)**.
 
 ```
 ┌────────────────────┐   track metadata   ┌──────────────────────┐
 │  Chrome extension  │ ─────────────────► │  local helper server │
 │  (icon + content)  │ ◄───────────────── │  yt-dlp + ffmpeg     │
-└────────────────────┘   progress + MP3   └──────────────────────┘
+└────────────────────┘   progress + file  └──────────────────────┘
                                            writes to a temp folder,
-                                           streams the .mp3 back
+                                           streams the .mp3/.mp4 back
 ```
 
 The extension cannot decode audio on its own, so the audio work happens in a small
@@ -42,7 +43,10 @@ the extension only ever talks to `127.0.0.1` (or a host you explicitly trust).
   `{artist} - {album} - {title}` or just `{title}`, with a live preview in settings.
 - **Live progress on the icon.** The badge shows a percentage, then `✓` or `!`, and a
   desktop notification names the file that was saved.
-- **Quality control.** 128 / 192 / 256 / 320 kbps.
+- **Quality control.** Audio: 128 / 192 / 256 / 320 kbps. Video: best, or a height cap
+  from 2160p down to 360p.
+- **Audio or video.** A single setting decides whether a click saves an MP3 or an MP4.
+  Audio and video keep separate folders and file names, so the two never collide.
 - **Runs anywhere.** Keep the server on your laptop, or on a Raspberry Pi so the
   CPU-heavy encoding happens elsewhere. A prebuilt arm64/amd64 image is on Docker Hub.
 - **Minimal footprint.** The server is Python standard library only — no pip install
@@ -75,7 +79,7 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.0.2
+TunePull helper server v1.1.0
   listening on http://127.0.0.1:8756
   access token: 5f3c...9a
   -> paste this into the extension's settings page
@@ -126,6 +130,18 @@ A note on long videos: a multi-hour DJ mix can take minutes to re-encode to MP3.
 progress sits at `95%` (the "Encoding MP3" stage) for that whole time; it is working, not
 stuck. If you would rather not wait, click again to cancel.
 
+### Audio or video
+
+Under **What to download** you choose whether a click gives you an **MP3** (audio) or an
+**MP4** (video). It is a single setting, decided before you download — there is still no
+per-song dialog. The audio and video settings are kept separately, so switching modes
+never overwrites the other's folder or file name.
+
+In video mode the server asks yt-dlp for the best MP4 (H.264 + AAC where available) and
+merges the streams with ffmpeg, capped at the height you picked. The merged file plays in
+any player without remuxing. It takes longer than audio, since it downloads the video
+track as well — the badge shows "Merging video" at `95%` while ffmpeg finishes.
+
 ## Settings
 
 Everything lives on one page (right-click the toolbar icon → *Options*).
@@ -135,9 +151,13 @@ Everything lives on one page (right-click the toolbar icon → *Options*).
 | **Server URL** | `http://127.0.0.1:8756` | The helper server. Must match its `--port`. |
 | **Access token** | *(empty)* | The token printed by the server. |
 | **Trusted hosts** | *(empty)* | Extra hostnames/IPs allowed beyond loopback. |
-| **Quality** | 320 kbps | 128 / 192 / 256 / 320. |
-| **Save to folder** | `Music/YouTube` | Relative to your Downloads directory. Empty = Downloads itself. |
-| **File name** | `{artist} - {title}` | Placeholders: `{title}`, `{artist}`, `{album}`. |
+| **Download as** | Audio — MP3 | What every click saves: an MP3 or an MP4. |
+| **Quality** (audio) | 320 kbps | 128 / 192 / 256 / 320. |
+| **Save to folder** (audio) | `Music/YouTube` | Relative to your Downloads directory. Empty = Downloads itself. |
+| **File name** (audio) | `{artist} - {title}` | Placeholders: `{title}`, `{artist}`, `{album}`. |
+| **Quality** (video) | Best available | Best, or a height cap (2160p … 360p). |
+| **Save to folder** (video) | *(empty)* | Videos get their own folder, so they do not mix with music. |
+| **File name** (video) | `{artist} - {title}` | Same placeholders as audio. |
 | **Ask me where to save each file** | off | Adds a Save-as dialog (breaks one-click). |
 | **Show a notification when a download finishes** | on | Desktop notification with the saved path. |
 
@@ -240,10 +260,10 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | `{version, tools, authRequired}` — used to show the connection status. |
-| `POST` | `/download` | Body `{url\|videoId, title, artist, album, quality}` → `{jobId}`. |
+| `POST` | `/download` | Body `{url\|videoId, title, artist, album, mediaType, quality, videoQuality}` → `{jobId}`. |
 | `GET` | `/job/<id>` | `{state, stage, percent, filename, error, cancelled}`. |
 | `POST` | `/cancel/<id>` | Stop a queued or running job (kills yt-dlp/ffmpeg). |
-| `GET` | `/file/<id>` | The finished MP3. |
+| `GET` | `/file/<id>` | The finished MP3 or MP4. |
 
 ## Safety and privacy
 

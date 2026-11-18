@@ -15,6 +15,8 @@ import {
   sanitizeFileName,
   isTrustedHost,
   parseHostList,
+  isVideoMode,
+  mediaSettings,
   DEFAULT_FILENAME_TEMPLATE,
 } from "../extension/lib/config.js";
 
@@ -78,6 +80,49 @@ test("buildDownloadPath cannot escape the Downloads directory", () => {
 test("buildDownloadPath always ends in .mp3 exactly once", () => {
   assert.equal(buildDownloadPath("", "Song.mp3"), "Song.mp3");
   assert.equal(buildDownloadPath("Music", "AC/DC: Back"), "Music/AC DC Back.mp3");
+});
+
+test("buildDownloadPath can produce an .mp4 for video", () => {
+  assert.equal(buildDownloadPath("Videos", "Song", ".mp4"), "Videos/Song.mp4");
+  assert.equal(buildDownloadPath("", "Song.mp3", ".mp4"), "Song.mp4");
+  assert.equal(buildDownloadPath("", "Song.mp4", ".mp3"), "Song.mp3");
+  // Anything that is not the video extension stays audio.
+  assert.equal(buildDownloadPath("", "Song", ".mkv"), "Song.mp3");
+});
+
+test("isVideoMode only trusts the video setting", () => {
+  assert.ok(isVideoMode({ mediaType: "video" }));
+  assert.ok(!isVideoMode({ mediaType: "audio" }));
+  assert.ok(!isVideoMode({}));
+  assert.ok(!isVideoMode(undefined));
+});
+
+test("mediaSettings resolves folder, template and extension per mode", () => {
+  const settings = {
+    mediaType: "audio",
+    downloadFolder: "Music/YT",
+    filenameTemplate: "{artist} - {title}",
+    videoFolder: "Videos/YT",
+    videoFilenameTemplate: "{title}",
+  };
+
+  const audio = mediaSettings(settings);
+  assert.equal(audio.video, false);
+  assert.equal(audio.ext, ".mp3");
+  assert.equal(audio.folder, "Music/YT");
+  assert.equal(audio.template, "{artist} - {title}");
+
+  const video = mediaSettings({ ...settings, mediaType: "video" });
+  assert.equal(video.video, true);
+  assert.equal(video.mediaType, "video");
+  assert.equal(video.ext, ".mp4");
+  assert.equal(video.folder, "Videos/YT");
+  assert.equal(video.template, "{title}");
+});
+
+test("mediaSettings falls back to the default template", () => {
+  assert.equal(mediaSettings({ mediaType: "video" }).template, DEFAULT_FILENAME_TEMPLATE);
+  assert.equal(mediaSettings({}).template, DEFAULT_FILENAME_TEMPLATE);
 });
 
 test("sanitizeFileName strips path-hostile characters", () => {

@@ -4,12 +4,19 @@ export const DEFAULTS = {
   serverUrl: "http://127.0.0.1:8756",
   serverToken: "",
   trustedHosts: [], // extra hostnames (besides loopback) the server may live on
-  quality: "320", // kbps: 128 | 192 | 256 | 320
+  mediaType: "audio", // "audio" (MP3) or "video" (MP4) — what a click downloads
+  quality: "320", // audio kbps: 128 | 192 | 256 | 320
   downloadFolder: "", // path inside the browser's Downloads directory, e.g. "Music/YT"
   filenameTemplate: "{artist} - {title}",
+  videoQuality: "best", // best | 2160 | 1440 | 1080 | 720 | 480 | 360
+  videoFolder: "", // videos get their own folder setting
+  videoFilenameTemplate: "{artist} - {title}",
   askWhereToSave: false, // when true the browser shows a Save-as dialog
   notifyOnFinish: true,
 };
+
+export const AUDIO_EXT = ".mp3";
+export const VIDEO_EXT = ".mp4";
 
 /** Loopback is always allowed, no matter what the user configures. */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -89,8 +96,10 @@ export function buildFileName(track, template = DEFAULT_FILENAME_TEMPLATE) {
  * `chrome.downloads` treats the path as relative to the Downloads directory and
  * rejects absolute paths or any "..", so both are stripped here.
  */
-export function buildDownloadPath(folder, filename) {
-  const safeFile = sanitizeFileName(filename, "audio").replace(/\.mp3$/i, "") + ".mp3";
+export function buildDownloadPath(folder, filename, ext = AUDIO_EXT) {
+  const suffix = ext === VIDEO_EXT ? VIDEO_EXT : AUDIO_EXT;
+  const stem = sanitizeFileName(filename, "audio").replace(/\.(mp3|mp4)$/i, "");
+  const safeFile = stem + suffix;
   const segments = String(folder || "")
     .replace(/\\/g, "/")
     .split("/")
@@ -99,4 +108,27 @@ export function buildDownloadPath(folder, filename) {
     .map((part) => sanitizeFileName(part, ""))
     .filter(Boolean);
   return [...segments, safeFile].join("/");
+}
+
+/** True when a click should produce a video rather than an MP3. */
+export function isVideoMode(settings) {
+  return String(settings?.mediaType || "audio").toLowerCase() === "video";
+}
+
+/**
+ * Resolve the folder/template/extension for the configured media type.
+ * Audio and video keep separate settings, so switching mode never loses the
+ * other's choices.
+ */
+export function mediaSettings(settings) {
+  const video = isVideoMode(settings);
+  return {
+    video,
+    mediaType: video ? "video" : "audio",
+    ext: video ? VIDEO_EXT : AUDIO_EXT,
+    folder: video ? settings?.videoFolder || "" : settings?.downloadFolder || "",
+    template:
+      (video ? settings?.videoFilenameTemplate : settings?.filenameTemplate) ||
+      DEFAULT_FILENAME_TEMPLATE,
+  };
 }

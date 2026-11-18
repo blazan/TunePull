@@ -51,15 +51,19 @@
       .preview code {
         color: var(--text);
       }
+      .inactive {
+        opacity: 0.5;
+      }
     </style>
   </head>
   <body>
     <h2>How it works</h2>
     <p class="hint">
-      Play a song on YouTube Music or YouTube and click the toolbar icon (or press
-      <code>Alt+Shift+D</code>). The song is converted by a small helper program running on your own
-      computer and saved into the folder below. Everything here applies to every download — there is
-      nothing to fill in per song.
+      Play a song or video on YouTube Music or YouTube and click the toolbar icon (or press
+      <code>Alt+Shift+D</code>). It is converted by a small helper program running on your own
+      computer and saved into the folder below. Everything here applies to every download —
+      there is nothing to fill in per song. Choose whether a click gives you an MP3 or an MP4
+      under <strong>What to download</strong>.
     </p>
 
     <h2>Helper server</h2>
@@ -96,8 +100,24 @@
       </div>
     </section>
 
-    <h2>Download</h2>
+    <h2>What to download</h2>
     <section class="card controls">
+      <label class="field">
+        <span>Download as</span>
+        <select id="media-type">
+          <option value="audio">Audio — MP3</option>
+          <option value="video">Video — MP4</option>
+        </select>
+      </label>
+      <p class="hint">
+        Every click downloads this kind of file. Switch to <strong>Video</strong> to save the
+        picture as well; the audio and video settings below are kept separately, so you can
+        flip between them without losing either.
+      </p>
+    </section>
+
+    <h2 id="audio-heading">Audio settings</h2>
+    <section class="card controls" id="audio-settings">
       <label class="field">
         <span>Quality</span>
         <select id="quality">
@@ -129,7 +149,50 @@
         <code>{artist} - {title}</code> or <code>{title}</code>.
       </p>
       <p class="preview">Preview: <code id="name-preview">Queen - Bohemian Rhapsody.mp3</code></p>
-      <label class="checkbox" style="margin-top: 12px">
+    </section>
+
+    <h2 id="video-heading">Video settings</h2>
+    <section class="card controls" id="video-settings">
+      <label class="field">
+        <span>Quality</span>
+        <select id="video-quality">
+          <option value="best">Best available</option>
+          <option value="2160">2160p (4K)</option>
+          <option value="1440">1440p</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="480">480p</option>
+          <option value="360">360p</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Save to folder</span>
+        <input
+          id="video-folder"
+          type="text"
+          spellcheck="false"
+          placeholder="Videos/YouTube"
+        />
+      </label>
+      <p class="hint">
+        Videos get their own folder, so they do not mix with your music. Leave empty to save
+        straight to Downloads.
+      </p>
+      <label class="field" style="margin-top: 10px">
+        <span>File name</span>
+        <input
+          id="video-filename-template"
+          type="text"
+          spellcheck="false"
+          placeholder="{artist} - {title}"
+        />
+      </label>
+      <p class="preview">Preview: <code id="video-name-preview">Queen - Bohemian Rhapsody.mp4</code></p>
+    </section>
+
+    <h2>When a download finishes</h2>
+    <section class="card controls">
+      <label class="checkbox">
         <input id="ask-save" type="checkbox" />
         <span>Ask me where to save each file</span>
       </label>

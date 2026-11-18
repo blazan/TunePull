@@ -6,10 +6,18 @@ Repo memory for the "TunePull" Chrome extension.
 
 An MV3 Chrome extension (`extension/`) plus a stdlib-only Python helper server
 (`server/server.py`). The extension scrapes the playing track and asks the
-server to run `yt-dlp` + `ffmpeg`, which produces the MP3 and streams it back.
+server to run `yt-dlp` + `ffmpeg`, which produces the MP3 (or MP4) and streams it back.
 
 There is **no popup**: clicking the toolbar icon (or `Alt+Shift+D`) runs the whole
 flow in the service worker, and all configuration lives on the options page.
+
+The `mediaType` setting (`"audio"` | `"video"`) picks what a click produces. It is
+sent in the `POST /download` body; the server branches on it (`is_video`) to choose the
+yt-dlp args, the output extension, and the `/file/<id>` content type. Audio and video
+keep **separate** folder/template settings in `config.js` (`mediaSettings` resolves the
+right pair), so switching mode never overwrites the other's choices. Video downloads
+use `-f bestvideo[ext=mp4]+bestaudio[ext=m4a]/…` with `--merge-output-format mp4`
+(capped by `videoQuality`, a height); audio keeps the existing extract-to-MP3 path.
 
 ## Commands
 
@@ -66,7 +74,12 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   (`CancelledError`, no failure notification).
 * Progress is a coarse model: download maps 0–100% onto 0–90, and the ffmpeg re-encode
   pins the bar at `95%` with no further output. A multi-hour mix legitimately sits at
-  `95%` for minutes; that is why cancel matters more than a better percentage.
+  `95%` for minutes; that is why cancel matters more than a better percentage. Video
+  mode shares this model: the ffmpeg merge (yt-dlp's `[Merger]` line) is the `95%` stage.
+* The media type is chosen **once, in the settings**, never per download. The extension
+  must not prompt or infer it from the page. `mediaSettings` in `config.js` is the single
+  place that maps the `mediaType` setting to a folder/template/extension; `buildDownloadPath`
+  takes the extension so the saved name matches the server's file.
 
 ## Docker / remote host
 
@@ -117,14 +130,18 @@ the transfer *starts* — code must not treat that as success. Keep `config.js` 
 of `chrome.*` at import time so the helper tests stay runnable.
 
 `python3 tests/test_server.py` covers the helper server: the filename-header
-helpers, the YouTube error hints, a full `POST /download` → poll → `/file/<id>`
-round-trip, and the concurrency/cancel contract (two jobs overlap, `/cancel` stops a
-running job, `--max-jobs` queues extras, and a queued job can be cancelled). It puts
-fake `yt-dlp`/`ffmpeg` on `PATH`, so it needs no network and no real encoding — the
-`make_slow_fakes` variant sleeps so overlap is observable. Run both suites before pushing.
+helpers, the media-type helpers (`is_video` / `media_ext` / `suggested_filename`), the
+YouTube error hints, a full `POST /download` → poll → `/file/<id>` round-trip (audio
+*and* video, checking the extension and `Content-Type`), and the concurrency/cancel
+contract (two jobs overlap, `/cancel` stops a running job, `--max-jobs` queues extras,
+and a queued job can be cancelled). It puts fake `yt-dlp`/`ffmpeg` on `PATH`, so it needs
+no network and no real encoding — the fakes write an `.mp4` when they see
+`--merge-output-format`, and the `make_slow_fakes` variant sleeps so overlap is
+observable. Run both suites before pushing.
 
 ## Testing without network
 
 Put fake `yt-dlp` / `ffmpeg` executables on `PATH` that print yt-dlp-style
-progress lines and write a dummy MP3 to the `-o` template path, then drive the
-server with `curl` (`/health`, `POST /download`, `/job/<id>`, `/file/<id>`).
+progress lines and write a dummy MP3 (or MP4 in video mode) to the `-o` template
+path, then drive the server with `curl` (`/health`, `POST /download`, `/job/<id>`,
+`/file/<id>`).

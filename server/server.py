@@ -4,15 +4,16 @@ Local helper server for the "TunePull" Chrome extension.
 
 The extension cannot decode audio or encode MP3 by itself, so it hands the track
 off to this small program, which runs on your own machine and shells out to
-`yt-dlp` (fetch + extract) and `ffmpeg` (encode to MP3). Results are written to a
-temporary folder and streamed back to the browser.
+`yt-dlp` (fetch + extract) and `ffmpeg` (encode to MP3, or merge to MP4). Results
+are written to a temporary folder and streamed back to the browser.
 
 Endpoints
     GET  /health          -> {version, tools}
-    POST /download        -> {jobId}          body: {url|videoId, title, artist, album, quality}
+    POST /download        -> {jobId}          body: {url|videoId, title, artist, album,
+                                              mediaType, quality, videoQuality}
     GET  /job/<id>        -> {state, stage, percent, filename, error}
     POST /cancel/<id>     -> stop a running job
-    GET  /file/<id>       -> the finished .mp3
+    GET  /file/<id>       -> the finished .mp3 or .mp4
 
 It binds to loopback only. A token is generated on first run and printed; paste
 it into the extension's settings. Use --no-auth to turn that off.
@@ -40,10 +41,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
+# Video height caps; "best" means no cap. Anything else falls back to "best".
+ALLOWED_VIDEO_HEIGHTS = {"best", "2160", "1440", "1080", "720", "480", "360"}
 MAX_BODY_BYTES = 64 * 1024
 JOB_TTL_SECONDS = 60 * 60  # finished jobs are cleaned up after an hour
+
+AUDIO_EXT = "mp3"
+VIDEO_EXT = "mp4"
+CONTENT_TYPES = {"mp3": "audio/mpeg", "mp4": "video/mp4"}
 
 
 class JobCancelled(Exception):
@@ -210,6 +217,14 @@ def find_js_runtime() -> str | None:
 PROGRESS_RE = re.compile(r"\[download\]\s+([\d.]+)%")
 
 
+def is_video(payload: dict) -> bool:
+    return str(payload.get("mediaType") or "audio").strip().lower() == "video"
+
+
+def media_ext(payload: dict) -> str:
+    return VIDEO_EXT if is_video(payload) else AUDIO_EXT
+
+
 def build_target_url(payload: dict) -> str:
     video_id = str(payload.get("videoId") or "").strip()
     if re.fullmatch(r"[\w-]{11}", video_id):
@@ -287,8 +302,8 @@ def error_hint(message: str) -> str:
 def suggested_filename(payload: dict) -> str:
     title = clean_name(payload.get("title"), "Unknown title")
     artist = clean_name(payload.get("artist"), "")
-    stem = clean_name(f"{artist} - {title}" if artist else title, "audio")
-    return f"{stem}.mp3"
+    stem = clean_name(f"{artist} - {title}" if artist else title, "media")
+    return f"{stem}.{media_ext(payload)}"
 
 
 def ascii_filename(name: str) -> str:
@@ -300,10 +315,13 @@ def ascii_filename(name: str) -> str:
     # Strip the ASCII control characters that would break the header syntax.
     printable = re.sub(r"[\x00-\x1f\x7f]", "", name)
     ascii_only = printable.encode("ascii", "replace").decode("ascii")
-    # A title made entirely of non-ASCII characters degrades to "?.mp3"; prefer a
-    # generic name over one the user cannot recognise.
-    if not re.search(r"[A-Za-z0-9]", ascii_only):
-        return "audio.mp3"
+    # A title made entirely of non-ASCII characters degrades to "?.mp4"; prefer a
+    # generic name over one the user cannot recognise. Ignore the extension itself
+    # when judging, or "?.mp4" would look like it has readable characters.
+    stem = Path(ascii_only).stem
+    if not re.search(r"[A-Za-z0-9]", stem):
+        suffix = Path(name).suffix.lower()
+        return f"media{suffix}" if suffix in (".mp3", ".mp4") else "media"
     return ascii_only
 
 
@@ -317,9 +335,13 @@ def content_disposition(name: str) -> str:
 def run_job(
     job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str, store: JobStore
 ) -> None:
+    video = is_video(payload)
     quality = str(payload.get("quality") or "320")
     if quality not in ALLOWED_QUALITIES:
         quality = "320"
+    height = str(payload.get("videoQuality") or "best")
+    if height not in ALLOWED_VIDEO_HEIGHTS:
+        height = "best"
 
     try:
         # Wait for a free slot without blocking a cancel: a queued job must still be
@@ -329,7 +351,7 @@ def run_job(
                 raise JobCancelled()
 
         try:
-            _run_job_inner(job, payload, yt_dlp, ffmpeg, quality)
+            _run_job_inner(job, payload, yt_dlp, ffmpeg, quality, height, video)
         finally:
             store.release_slot()
     except JobCancelled:
@@ -346,36 +368,71 @@ def run_job(
 
 
 def _run_job_inner(
-    job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str, quality: str
+    job: Job,
+    payload: dict,
+    yt_dlp: list[str],
+    ffmpeg: str,
+    quality: str,
+    height: str,
+    video: bool,
 ) -> None:
     job.state = "running"
     target = build_target_url(payload)
     job_dir = job.dir
-    job.path = job_dir / "output.mp3"
+    ext = VIDEO_EXT if video else AUDIO_EXT
+    job.path = job_dir / f"output.{ext}"
 
-    command = [
-        *yt_dlp,
-        "--no-playlist",
-        "--no-part",
-        "--newline",
-        "--no-warnings",
-        "--ffmpeg-location",
-        ffmpeg,
-        "-f",
-        "bestaudio/best",
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        f"{quality}K",
-        "-o",
-        str(job_dir / "source.%(ext)s"),
-        "--paths",
-        f"temp:{job_dir}",
-        target,
-    ]
+    if video:
+        # Prefer an H.264+AAC mp4 so the file plays anywhere without remuxing.
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        if height != "best":
+            fmt = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}]/best"
+        command = [
+            *yt_dlp,
+            "--no-playlist",
+            "--no-part",
+            "--newline",
+            "--no-warnings",
+            "--ffmpeg-location",
+            ffmpeg,
+            "-f",
+            fmt,
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            str(job_dir / "source.%(ext)s"),
+            "--paths",
+            f"temp:{job_dir}",
+            target,
+        ]
+        stage_download = "Downloading video"
+        stage_encode = "Merging video"
+    else:
+        command = [
+            *yt_dlp,
+            "--no-playlist",
+            "--no-part",
+            "--newline",
+            "--no-warnings",
+            "--ffmpeg-location",
+            ffmpeg,
+            "-f",
+            "bestaudio/best",
+            "--extract-audio",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            f"{quality}K",
+            "-o",
+            str(job_dir / "source.%(ext)s"),
+            "--paths",
+            f"temp:{job_dir}",
+            target,
+        ]
+        stage_download = "Downloading audio"
+        stage_encode = "Encoding MP3"
 
-    job.stage = "Downloading audio"
+    job.stage = stage_download
     job.percent = 0.0
     process = subprocess.Popen(
         command,
@@ -399,10 +456,10 @@ def _run_job_inner(
         if match:
             # Download is the bulk of the wall-clock time, so map it to 0-90%.
             job.percent = round(min(float(match.group(1)) * 0.9, 90.0), 1)
-        elif "[ExtractAudio]" in line or "[ffmpeg]" in line:
-            # ffmpeg re-encodes the whole track here; on a multi-hour mix this
-            # is minutes of wall time with no further progress output.
-            job.stage = "Encoding MP3"
+        elif "[ExtractAudio]" in line or "[Merger]" in line or "[ffmpeg]" in line:
+            # ffmpeg re-encodes/merges the whole track here; on a multi-hour file
+            # this is minutes of wall time with no further progress output.
+            job.stage = stage_encode
             job.percent = 95.0
 
     code = process.wait()
@@ -413,11 +470,11 @@ def _run_job_inner(
     if code != 0:
         raise RuntimeError(last_error(tail) or f"yt-dlp exited with code {code}")
 
-    produced = job_dir / "output.mp3"
+    produced = job_dir / f"output.{ext}"
     if not produced.exists():
-        candidates = sorted(job_dir.glob("*.mp3"))
+        candidates = sorted(job_dir.glob(f"*.{ext}"))
         if not candidates:
-            raise RuntimeError("No MP3 file was produced")
+            raise RuntimeError(f"No {ext.upper()} file was produced")
         candidates[0].rename(produced)
 
     job.path = produced
@@ -588,8 +645,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         size = job.path.stat().st_size
+        suffix = job.path.suffix.lower().lstrip(".")
+        content_type = CONTENT_TYPES.get(suffix, "application/octet-stream")
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(size))
         self.send_header("Content-Disposition", content_disposition(job.suggested_name))
         # Custom headers are encoded latin-1 by http.server, so keep this ASCII.

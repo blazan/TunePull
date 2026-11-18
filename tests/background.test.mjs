@@ -14,9 +14,13 @@ const SETTINGS = {
   serverUrl: "http://127.0.0.1:8756",
   serverToken: "tok",
   trustedHosts: [],
+  mediaType: "audio",
   quality: "320",
   downloadFolder: "Music/YouTube",
   filenameTemplate: "{artist} - {title}",
+  videoQuality: "1080",
+  videoFolder: "Videos/YouTube",
+  videoFilenameTemplate: "{artist} - {title}",
   askWhereToSave: false,
   notifyOnFinish: true,
 };
@@ -115,7 +119,13 @@ async function loadWorker({
 
   globalThis.fetch = async (url, opts = {}) => {
     const href = String(url);
-    calls.requests.push({ href, method: opts.method || "GET" });
+    let body = null;
+    try {
+      body = opts.body ? JSON.parse(opts.body) : null;
+    } catch {
+      body = opts.body ?? null;
+    }
+    calls.requests.push({ href, method: opts.method || "GET", body });
     if (href.includes("/download")) {
       jobCounter += 1;
       return { ok: true, status: 200, json: async () => ({ jobId: `job${jobCounter}` }) };
@@ -376,4 +386,59 @@ test("success is announced only after Chrome reports completion", async () => {
   await settle();
   assert.equal(calls.notifications.length, 1);
   assert.equal(calls.notifications[0].title, "Saved");
+});
+
+test("audio mode posts mediaType=audio and saves an .mp3 in the audio folder", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+
+  await run();
+  await settle();
+
+  const post = calls.requests.find((r) => r.href.includes("/download"));
+  assert.equal(post.body.mediaType, "audio");
+  assert.equal(post.body.quality, "320");
+  assert.equal(calls.downloads[0].filename, "Music/YouTube/Queen - Bohemian Rhapsody.mp3");
+});
+
+test("video mode posts mediaType=video and saves an .mp4 in the video folder", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "video", videoQuality: "720" },
+  });
+
+  await run();
+  await settle();
+
+  const post = calls.requests.find((r) => r.href.includes("/download"));
+  assert.equal(post.body.mediaType, "video");
+  assert.equal(post.body.videoQuality, "720");
+  assert.equal(
+    calls.downloads[0].filename,
+    "Videos/YouTube/Queen - Bohemian Rhapsody.mp4",
+    "video folder + .mp4, not the audio folder",
+  );
+});
+
+test("video mode uses the video filename template", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: {
+      ...SETTINGS,
+      mediaType: "video",
+      filenameTemplate: "{artist} - {title}",
+      videoFilenameTemplate: "{title} [{album}]",
+    },
+  });
+
+  await run();
+  await settle();
+
+  assert.equal(
+    calls.downloads[0].filename,
+    "Videos/YouTube/Bohemian Rhapsody [A Night at the Opera].mp4",
+    "the video template wins in video mode",
+  );
 });

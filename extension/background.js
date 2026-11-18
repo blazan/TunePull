@@ -14,6 +14,7 @@ import {
   buildFileName,
   buildDownloadPath,
   isTrustedHost,
+  mediaSettings,
 } from "./lib/config.js";
 
 const POLL_INTERVAL_MS = 700;
@@ -145,6 +146,7 @@ function flashBadge(text, color) {
 /** Kick off conversion on the helper server; resolves to a job id. */
 async function startJob(track) {
   const settings = await getSettings();
+  const media = mediaSettings(settings);
   const endpoint = new URL("/download", parseServer(settings.serverUrl, settings.trustedHosts));
 
   let response;
@@ -158,7 +160,10 @@ async function startJob(track) {
         title: track.title || "",
         artist: track.artist || "",
         album: track.album || "",
+        mediaType: media.mediaType,
+        // Audio wants a bitrate; video wants a height cap ("best" = no cap).
         quality: String(settings.quality || "320"),
+        videoQuality: String(settings.videoQuality || "best"),
       }),
     });
   } catch {
@@ -314,9 +319,11 @@ async function runDownload(track, key) {
     }
 
     const settings = await getSettings();
+    const media = mediaSettings(settings);
     const filename = buildDownloadPath(
-      settings.downloadFolder,
-      buildFileName(track, settings.filenameTemplate),
+      media.folder,
+      buildFileName(track, media.template),
+      media.ext,
     );
 
     const downloadId = await chrome.downloads.download({

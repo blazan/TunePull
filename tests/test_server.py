@@ -34,13 +34,20 @@ out = None
 for i, arg in enumerate(argv):
     if arg == "-o":
         out = argv[i + 1]
+# The server asks for an mp4 merge in video mode; write that instead of an mp3.
+video = "--merge-output-format" in argv
+ext = "mp4" if video else "mp3"
+path = None
 if out:
-    path = out.replace("%(ext)s", "mp3")
+    path = out.replace("%(ext)s", ext)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as handle:
-        handle.write(b"ID3\\x03\\x00\\x00\\x00" + b"\\x00" * 512)
+        handle.write(b"\\x00\\x00\\x00\\x18ftypmp42" + b"\\x00" * 512)
 print("[download] 100% of 0.50KiB")
-print("[ExtractAudio] Destination: " + (path if out else "unknown"))
+if video:
+    print("[Merger] Merging formats into \\"" + (path or "unknown") + "\\"")
+else:
+    print("[ExtractAudio] Destination: " + (path if path else "unknown"))
 """
 
 
@@ -81,6 +88,27 @@ def make_slow_fakes(directory: Path) -> None:
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+class MediaTypeTests(unittest.TestCase):
+    def test_is_video_only_for_video(self) -> None:
+        self.assertTrue(server.is_video({"mediaType": "video"}))
+        self.assertTrue(server.is_video({"mediaType": "Video"}))
+        self.assertFalse(server.is_video({"mediaType": "audio"}))
+        self.assertFalse(server.is_video({}))
+
+    def test_media_ext_follows_the_media_type(self) -> None:
+        self.assertEqual(server.media_ext({"mediaType": "video"}), "mp4")
+        self.assertEqual(server.media_ext({"mediaType": "audio"}), "mp3")
+        self.assertEqual(server.media_ext({}), "mp3")
+
+    def test_suggested_filename_uses_the_right_extension(self) -> None:
+        payload = {"title": "Song", "artist": "Band"}
+        self.assertEqual(server.suggested_filename(payload), "Band - Song.mp3")
+        self.assertEqual(
+            server.suggested_filename({**payload, "mediaType": "video"}),
+            "Band - Song.mp4",
+        )
+
+
 class FilenameHeaderTests(unittest.TestCase):
     """The header helpers must never emit a byte outside latin-1."""
 
@@ -94,7 +122,9 @@ class FilenameHeaderTests(unittest.TestCase):
         self.assertNotIn("\r", server.ascii_filename("bad\r\nname.mp3"))
 
     def test_ascii_filename_never_empty(self) -> None:
-        self.assertEqual(server.ascii_filename("🎵"), "audio.mp3")
+        self.assertEqual(server.ascii_filename("🎵"), "media")
+        self.assertEqual(server.ascii_filename("🎵.mp4"), "media.mp4")
+        self.assertEqual(server.ascii_filename("🎵.mp3"), "media.mp3")
 
     def test_content_disposition_is_latin1_safe(self) -> None:
         # http.server encodes headers as latin-1; a stray emoji aborts the response.
@@ -208,6 +238,41 @@ class DownloadRoundTripTests(unittest.TestCase):
             self.assertIn("filename*=UTF-8''", disposition)
             self.assertTrue(response.headers["X-Suggested-Filename"].isascii())
             self.assertGreater(len(response.read()), 0)
+
+    def test_video_download_produces_an_mp4(self) -> None:
+        job_id = self._post(
+            {
+                "videoId": "dQw4w9WgXcQ",
+                "title": "A Music Video",
+                "artist": "Someone",
+                "mediaType": "video",
+                "videoQuality": "720",
+            }
+        )
+        status = self._wait(job_id)
+        self.assertEqual(status["state"], "done", status.get("error"))
+        self.assertTrue(status["filename"].endswith(".mp4"), status["filename"])
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/file/{job_id}", timeout=10
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "video/mp4")
+            self.assertIn(".mp4", response.headers["Content-Disposition"])
+            self.assertGreater(len(response.read()), 0)
+
+    def test_audio_is_the_default_when_media_type_is_absent(self) -> None:
+        job_id = self._post({"videoId": "dQw4w9WgXcQ", "title": "Plain Song"})
+        status = self._wait(job_id)
+        self.assertEqual(status["state"], "done", status.get("error"))
+        self.assertTrue(status["filename"].endswith(".mp3"), status["filename"])
+
+    def test_unknown_video_quality_falls_back_to_best(self) -> None:
+        job_id = self._post(
+            {"videoId": "dQw4w9WgXcQ", "title": "Weird", "mediaType": "video", "videoQuality": "9000"}
+        )
+        status = self._wait(job_id)
+        self.assertEqual(status["state"], "done", status.get("error"))
 
     def test_rejects_unknown_host(self) -> None:
         request = urllib.request.Request(

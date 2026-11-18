@@ -5,6 +5,7 @@ import {
   parseHostList,
   isTrustedHost,
   buildFileName,
+  buildDownloadPath,
 } from "./lib/config.js";
 
 const el = (id) => document.getElementById(id);
@@ -12,10 +13,17 @@ const ui = {
   serverUrl: el("server-url"),
   serverToken: el("server-token"),
   trustedHosts: el("trusted-hosts"),
+  mediaType: el("media-type"),
   quality: el("quality"),
   folder: el("download-folder"),
   template: el("filename-template"),
   namePreview: el("name-preview"),
+  videoQuality: el("video-quality"),
+  videoFolder: el("video-folder"),
+  videoTemplate: el("video-filename-template"),
+  videoNamePreview: el("video-name-preview"),
+  audioSettings: el("audio-settings"),
+  videoSettings: el("video-settings"),
   askSave: el("ask-save"),
   notify: el("notify"),
   status: el("status"),
@@ -29,10 +37,28 @@ function showStatus(text, kind = "") {
   ui.status.className = `status ${kind}`.trim();
 }
 
+/** Render a sample path for one media type, so the preview matches what will be saved. */
+function renderPreview(track, folder, template, ext, target) {
+  const name = buildFileName(track, template || DEFAULTS.filenameTemplate);
+  target.textContent = buildDownloadPath(folder.trim(), name, ext);
+}
+
 function updatePreview() {
-  const name = buildFileName(SAMPLE_TRACK, ui.template.value || DEFAULTS.filenameTemplate);
-  const folder = ui.folder.value.trim().replace(/^\/+|\/+$/g, "");
-  ui.namePreview.textContent = `${folder ? folder + "/" : ""}${name}.mp3`;
+  renderPreview(SAMPLE_TRACK, ui.folder.value, ui.template.value, ".mp3", ui.namePreview);
+  renderPreview(
+    SAMPLE_TRACK,
+    ui.videoFolder.value,
+    ui.videoTemplate.value,
+    ".mp4",
+    ui.videoNamePreview,
+  );
+}
+
+/** Dim the group that the current "Download as" choice will not use. */
+function updateMediaMode() {
+  const video = ui.mediaType.value === "video";
+  ui.audioSettings.classList.toggle("inactive", video);
+  ui.videoSettings.classList.toggle("inactive", !video);
 }
 
 async function load() {
@@ -40,11 +66,16 @@ async function load() {
   ui.serverUrl.value = settings.serverUrl;
   ui.serverToken.value = settings.serverToken;
   ui.trustedHosts.value = (settings.trustedHosts || []).join(", ");
+  ui.mediaType.value = settings.mediaType === "video" ? "video" : "audio";
   ui.quality.value = String(settings.quality);
   ui.folder.value = settings.downloadFolder || "";
   ui.template.value = settings.filenameTemplate || DEFAULTS.filenameTemplate;
+  ui.videoQuality.value = String(settings.videoQuality || "best");
+  ui.videoFolder.value = settings.videoFolder || "";
+  ui.videoTemplate.value = settings.videoFilenameTemplate || DEFAULTS.videoFilenameTemplate;
   ui.askSave.checked = Boolean(settings.askWhereToSave);
   ui.notify.checked = Boolean(settings.notifyOnFinish);
+  updateMediaMode();
   updatePreview();
 }
 
@@ -69,9 +100,13 @@ function collect() {
     serverUrl,
     serverToken: ui.serverToken.value.trim(),
     trustedHosts,
+    mediaType: ui.mediaType.value === "video" ? "video" : "audio",
     quality: ui.quality.value,
     downloadFolder: ui.folder.value.trim(),
     filenameTemplate: ui.template.value.trim() || DEFAULTS.filenameTemplate,
+    videoQuality: ui.videoQuality.value,
+    videoFolder: ui.videoFolder.value.trim(),
+    videoFilenameTemplate: ui.videoTemplate.value.trim() || DEFAULTS.videoFilenameTemplate,
     askWhereToSave: ui.askSave.checked,
     notifyOnFinish: ui.notify.checked,
   };
@@ -99,11 +134,24 @@ async function test() {
 }
 
 // Save on change so a forgotten "Save" click can never lose a setting.
-for (const field of [ui.serverUrl, ui.serverToken, ui.trustedHosts, ui.quality, ui.folder, ui.template]) {
+for (const field of [
+  ui.serverUrl,
+  ui.serverToken,
+  ui.trustedHosts,
+  ui.mediaType,
+  ui.quality,
+  ui.folder,
+  ui.template,
+  ui.videoQuality,
+  ui.videoFolder,
+  ui.videoTemplate,
+]) {
   field.addEventListener("change", save);
 }
-ui.template.addEventListener("input", updatePreview);
-ui.folder.addEventListener("input", updatePreview);
+for (const input of [ui.template, ui.folder, ui.videoTemplate, ui.videoFolder]) {
+  input.addEventListener("input", updatePreview);
+}
+ui.mediaType.addEventListener("change", updateMediaMode);
 for (const box of [ui.askSave, ui.notify]) {
   box.addEventListener("change", save);
 }

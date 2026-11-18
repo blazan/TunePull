@@ -8,9 +8,13 @@ const settings = {
   serverUrl: SERVER,
   serverToken: "demo-token",
   trustedHosts: ["192.168.1.50"],
+  mediaType: "audio",
   quality: "320",
   downloadFolder: "Music/YouTube",
   filenameTemplate: "{artist} - {title}",
+  videoQuality: "1080",
+  videoFolder: "Videos/YouTube",
+  videoFilenameTemplate: "{artist} - {title}",
   askWhereToSave: false,
   notifyOnFinish: true,
 };
