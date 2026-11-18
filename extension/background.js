@@ -16,6 +16,7 @@ import {
   isTrustedHost,
   mediaSettings,
 } from "./lib/config.js";
+import { collectCookieFile } from "./lib/cookies.js";
 
 const POLL_INTERVAL_MS = 700;
 
@@ -222,6 +223,47 @@ async function cancelDownload(key) {
   }
 }
 
+/**
+ * Upload this browser's YouTube cookies to the helper server.
+ *
+ * Only ever called for a server the user trusts, and only when they opted in.
+ * Returns the server's response ({ok, cookies, count}); throws on failure so the
+ * caller can surface it.
+ */
+async function syncCookiesToServer() {
+  const settings = await getSettings();
+  const endpoint = new URL("/cookies", parseServer(settings.serverUrl, settings.trustedHosts));
+  const { text, count } = await collectCookieFile();
+  if (!count) {
+    throw new Error("No YouTube cookies found — sign in to YouTube in this browser first");
+  }
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(settings.serverToken) },
+      body: JSON.stringify({ cookies: text }),
+    });
+  } catch {
+    throw new Error(`Cannot reach the helper server at ${settings.serverUrl}`);
+  }
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
+/** Best-effort sync before a download; a failure must not block the download. */
+async function maybeSyncCookies() {
+  try {
+    const { syncCookies } = await getSettings();
+    if (!syncCookies) return;
+    await syncCookiesToServer();
+  } catch {
+    // The download will still run; if the bot wall bites, the server error hints
+    // at cookies, and the options page can report the sync problem.
+  }
+}
+
 /** Build the file URL (token goes in the query string: downloads carry no headers). */
 async function fileUrlFor(jobId) {
   const settings = await getSettings();
@@ -296,6 +338,7 @@ async function runDownload(track, key) {
   try {
     // Inside the try: failing to even start the job (server down, host not
     // trusted) is the most common error and must reach the user too.
+    await maybeSyncCookies();
     jobId = await startJob(track);
     activeJobs.set(jobId, { track, percent: null });
     // Published before the first poll, so a second click can cancel immediately.
@@ -448,6 +491,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "tunepull:getTrack":
           sendResponse({ ok: true, track: await fetchTrackFromActiveTab() });
           break;
+        case "tunepull:syncCookies": {
+          try {
+            const data = await syncCookiesToServer();
+            sendResponse({ ok: true, data });
+          } catch (error) {
+            sendResponse({ ok: false, error: error?.message || String(error) });
+          }
+          break;
+        }
+        case "tunepull:clearCookies": {
+          const settings = await getSettings();
+          let endpoint;
+          try {
+            endpoint = new URL(
+              "/cookies",
+              parseServer(settings.serverUrl, settings.trustedHosts),
+            );
+          } catch (error) {
+            sendResponse({ ok: false, error: error.message });
+            return;
+          }
+          try {
+            const response = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...authHeaders(settings.serverToken) },
+              body: JSON.stringify({ clear: true }),
+            });
+            if (!response.ok) {
+              sendResponse({ ok: false, error: await readError(response) });
+              return;
+            }
+            sendResponse({ ok: true, data: await response.json() });
+          } catch {
+            sendResponse({ ok: false, error: `No response from ${settings.serverUrl}` });
+          }
+          break;
+        }
         default:
           sendResponse({ ok: false, error: `Unknown message: ${message?.type}` });
       }

@@ -190,6 +190,29 @@
       <p class="preview">Preview: <code id="video-name-preview">Queen - Bohemian Rhapsody.mp4</code></p>
     </section>
 
+    <h2>YouTube sign-in (cookies)</h2>
+    <section class="card controls">
+      <p class="hint">
+        YouTube often refuses downloads with <em>"Sign in to confirm you're not a bot"</em>,
+        especially when the helper server runs on a Raspberry Pi or another machine. TunePull can
+        send this browser's YouTube cookies to the server so yt-dlp looks signed in.
+      </p>
+      <label class="checkbox">
+        <input id="sync-cookies" type="checkbox" />
+        <span>Send my YouTube cookies to the helper server automatically</span>
+      </label>
+      <p class="hint">
+        Off by default. Cookies are <strong>account credentials</strong>: anyone who gets them can
+        sign in as you. They are sent only to the server above, kept in memory for as long as it
+        runs (never written to disk, gone on restart), and never sent anywhere else. Only enable
+        this on a server you control, and prefer HTTPS if it is reachable beyond your own machine.
+      </p>
+      <div class="row" style="margin-top: 12px">
+        <button id="sync-cookies-now" style="width: auto; padding: 9px 16px">Send cookies now</button>
+        <button id="clear-cookies" style="width: auto; padding: 9px 16px">Forget cookies on server</button>
+      </div>
+    </section>
+
     <h2>When a download finishes</h2>
     <section class="card controls">
       <label class="checkbox">

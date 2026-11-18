@@ -41,6 +41,7 @@ async function loadWorker({
   settings = SETTINGS,
   downloadOutcome = "complete",
   downloadDelayMs = 0,
+  cookieUploadFails = false,
 }) {
   const calls = {
     downloads: [],
@@ -112,6 +113,18 @@ async function loadWorker({
     },
     scripting: { executeScript: async () => [] },
     storage: { sync: { get: async (defaults) => ({ ...defaults, ...settings }) } },
+    cookies: {
+      getAll: async () => [
+        {
+          name: "SID",
+          value: "cookie-secret",
+          domain: ".youtube.com",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+        },
+      ],
+    },
   };
 
   // Per-job poll counters, so two concurrent jobs advance independently.
@@ -126,6 +139,12 @@ async function loadWorker({
       body = opts.body ?? null;
     }
     calls.requests.push({ href, method: opts.method || "GET", body });
+    if (href.includes("/cookies")) {
+      if (cookieUploadFails) {
+        return { ok: false, status: 500, json: async () => ({ error: "boom" }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, cookies: true, count: 1 }) };
+    }
     if (href.includes("/download")) {
       jobCounter += 1;
       return { ok: true, status: 200, json: async () => ({ jobId: `job${jobCounter}` }) };
@@ -441,4 +460,54 @@ test("video mode uses the video filename template", async () => {
     "Videos/YouTube/Bohemian Rhapsody [A Night at the Opera].mp4",
     "the video template wins in video mode",
   );
+});
+
+test("cookies are uploaded before the download when sync is enabled", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, syncCookies: true },
+  });
+
+  await run();
+  await settle();
+
+  const cookiePost = calls.requests.find((r) => r.href.includes("/cookies"));
+  assert.ok(cookiePost, "the worker must POST to /cookies");
+  assert.equal(cookiePost.method, "POST");
+  assert.match(cookiePost.body.cookies, /SID/);
+  // The cookie upload must happen before the job starts.
+  const downloadPost = calls.requests.find((r) => r.href.includes("/download"));
+  assert.ok(
+    calls.requests.indexOf(cookiePost) < calls.requests.indexOf(downloadPost),
+    "cookies first, then /download",
+  );
+});
+
+test("no cookie upload when sync is disabled", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, syncCookies: false },
+  });
+
+  await run();
+  await settle();
+
+  assert.equal(
+    calls.requests.some((r) => r.href.includes("/cookies")),
+    false,
+    "opt-in only",
+  );
+});
+
+test("a failed cookie sync does not block the download", async () => {
+  const { calls, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, syncCookies: true },
+    cookieUploadFails: true,
+  });
+
+  await run();
+  await settle();
+
+  assert.equal(calls.downloads.length, 1, "the download still happens");
 });

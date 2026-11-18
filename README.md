@@ -79,10 +79,11 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.2.0
+TunePull helper server v1.3.0
   listening on http://127.0.0.1:8756
-  cookies: none — YouTube may show "confirm you're not a bot". Pass
-     --cookies <file> or --cookies-from-browser <browser> if that happens.
+  cookies: none yet — the extension can send them automatically, or pass
+     --cookies <file> / --cookies-from-browser <browser>. YouTube may show
+     "confirm you're not a bot" until cookies are supplied.
   access token: 5f3c...9a
   -> paste this into the extension's settings page
 ```
@@ -164,6 +165,7 @@ Everything lives on one page (right-click the toolbar icon → *Options*).
 | **File name** (video) | `{artist} - {title}` | Same placeholders as audio. |
 | **Ask me where to save each file** | off | Adds a Save-as dialog (breaks one-click). |
 | **Show a notification when a download finishes** | on | Desktop notification with the saved path. |
+| **Send my YouTube cookies to the helper server automatically** | off | Clears the bot wall. Sends account credentials — see *Safety and privacy*. |
 
 ## Run the helper server on a Raspberry Pi
 
@@ -234,10 +236,18 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 `8756`. Nothing else changes; the extension just sends the track to the Pi instead of
 `localhost`.
 
-If downloads fail with **"Sign in to confirm you're not a bot"**, the Pi has no browser
-to read cookies from, so export a `cookies.txt` from a browser on your PC (a "Get
-cookies.txt" extension, Netscape format), copy it next to `docker-compose.yml`, then
-add the volume and the flag:
+If downloads fail with **"Sign in to confirm you're not a bot"**, you have two options:
+
+**Let the extension send cookies (recommended for a Pi).** In the extension's Options,
+under **YouTube sign-in (cookies)**, tick the automatic sync and click **Send cookies
+now**. Chrome on your PC reads its YouTube cookies and sends them to the Pi, which keeps
+them in memory. This is the easiest route because the Pi has no browser to read cookies
+from. Read the security note in the troubleshooting section first — cookies are account
+credentials, so only do this on a Pi you control.
+
+**Or mount a cookies.txt by hand.** Export `cookies.txt` from a browser on your PC (a
+"Get cookies.txt" extension, Netscape format), copy it next to `docker-compose.yml`,
+then add the volume and the flag:
 
 ```yaml
     command: ["--token", "${TUNEPULL_TOKEN:-change-me-please}",
@@ -246,7 +256,8 @@ add the volume and the flag:
       - ./cookies.txt:/cookies/cookies.txt:ro
 ```
 
-Cookies expire, so refresh the file if the wall comes back.
+Cookies expire, so refresh them (or click **Send cookies now** again) if the wall comes
+back.
 
 ### Security notes for a network-exposed server
 
@@ -281,6 +292,7 @@ Cookies expire, so refresh the file if the wall comes back.
 | `POST` | `/download` | Body `{url\|videoId, title, artist, album, mediaType, quality, videoQuality}` → `{jobId}`. |
 | `GET` | `/job/<id>` | `{state, stage, percent, filename, error, cancelled}`. |
 | `POST` | `/cancel/<id>` | Stop a queued or running job (kills yt-dlp/ffmpeg). |
+| `POST` | `/cookies` | Body `{cookies: "<netscape cookies.txt>"}` (or `{clear: true}`) — signs yt-dlp in. Stored in memory only. |
 | `GET` | `/file/<id>` | The finished MP3 or MP4. |
 
 ## Safety and privacy
@@ -297,6 +309,15 @@ Cookies expire, so refresh the file if the wall comes back.
   finishes (and when the server stops).
 - The folder setting is confined to your Downloads directory: `..` and absolute paths
   are stripped, so a template cannot be used to write outside it.
+- **YouTube cookies (opt-in).** If you enable cookie sync, the extension reads your
+  YouTube session cookies and POSTs them to the helper server so yt-dlp can sign in.
+  These are account credentials — anyone holding them can sign in as you. TunePull
+  limits the blast radius: only auth cookies (`SID`, `HSID`, `__Secure-*`, …) are sent,
+  not the whole jar; they go only to the server you configured; the server writes them
+  to a `0600` file in its private temp dir and keeps them in memory, never logging them
+  or echoing them back, and forgets everything on restart. The request is still plain
+  HTTP unless you put the server behind TLS, so enable this only on a server you
+  control. **Forget cookies on server** revokes them immediately.
 
 ## Troubleshooting
 
@@ -311,20 +332,39 @@ Cookies expire, so refresh the file if the wall comes back.
   often; update with `pip install -U yt-dlp` (or rebuild the Docker image).
 - **"Sign in to confirm you're not a bot" / `403 Forbidden` on the media stream** —
   YouTube wants proof that a real person is asking, and it is stricter for cloud/VPS or
-  datacenter IPs. Give the helper server a signed-in browser's cookies:
+  datacenter IPs. There are two ways to clear it.
+
+  **Easiest — let the extension send cookies** (best when Chrome and the server are on
+  different machines, e.g. Chrome on Windows and the server on a Pi):
+
+  1. Open the extension's **Options** → **YouTube sign-in (cookies)**.
+  2. Tick **Send my YouTube cookies to the helper server automatically**.
+  3. Click **Send cookies now** to confirm it works (you should see *Sent N …*).
+
+  Cookies are read from your browser and POSTed to the server, which keeps them in
+  memory only. They are **account credentials** — see the warning below.
+
+  **Manual — pass a cookies file to the server** (best when the server is on the same
+  machine as the browser):
 
   ```bash
-  # On a machine where you are logged into YouTube in a browser:
+  # Same machine as your browser:
   python server/server.py --cookies-from-browser firefox    # or chrome, edge, brave…
 
-  # On a headless box (Pi, VPS), export cookies.txt in the browser first
+  # Headless box: export cookies.txt in the browser first
   # (a "Get cookies.txt" extension, Netscape format) and pass the file:
   python server/server.py --cookies /path/to/cookies.txt
   ```
 
-  Cookies are the only reliable fix for this wall. Update yt-dlp too
-  (`pip install -U yt-dlp`) — YouTube changes often, and a fresh yt-dlp clears many
-  blocks on its own. Running the server on a normal home connection helps as well.
+  Update yt-dlp too (`pip install -U yt-dlp`) — YouTube changes often, and a fresh
+  yt-dlp clears many blocks on its own.
+
+  > **Sending cookies is a real trade-off.** Anyone who has your YouTube cookies can
+  > sign in as you. TunePull sends them only to the server you configured, keeps them
+  > out of logs and out of the response, and stores them in memory (gone on restart).
+  > But if the server is reachable beyond your own machine, that traffic is plain HTTP
+  > unless you put it behind TLS — so only enable this on a server you control, and
+  > prefer HTTPS. Click **Forget cookies on server** to revoke them at any time.
 - **"This video is not available" / "Video unavailable"** — YouTube is refusing that
   specific video, usually because the label restricts it by region or only allows it
   in certain apps. TunePull cannot bypass this, and it is not a server fault: try a

@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 # Video height caps; "best" means no cap. Anything else falls back to "best".
 ALLOWED_VIDEO_HEIGHTS = {"best", "2160", "1440", "1080", "720", "480", "360"}
@@ -225,6 +225,86 @@ def build_cookie_args(cookies: str, cookies_from_browser: str) -> list[str]:
     if browser:
         return ["--cookies-from-browser", browser]
     return []
+
+
+# Cookies the extension uploads are account credentials. The server keeps them for
+# its lifetime only: in memory, plus a 0600 file in the private temp workdir,
+# because yt-dlp can only read cookies from a file. Nothing is written to a
+# user-visible location and nothing survives a restart.
+#
+# The cap stays under MAX_BODY_BYTES so an oversized upload is caught with a clear
+# message here rather than as a generic "invalid body". Auth cookies are a few KB.
+MAX_COOKIE_BYTES = MAX_BODY_BYTES // 2
+MAX_COOKIES = 500
+
+
+def normalize_cookies(text) -> str:
+    """Validate an uploaded Netscape cookies.txt and return a clean copy.
+
+    Raises ValueError with a user-facing message when the input is not a cookie
+    file. The values are never logged or echoed back in a response.
+    """
+    if not isinstance(text, str):
+        raise ValueError("cookies must be a string in Netscape cookies.txt format")
+    if len(text.encode("utf-8")) > MAX_COOKIE_BYTES:
+        raise ValueError("Cookie file is too large")
+
+    lines = []
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if not line.strip():
+            continue
+        # "#HttpOnly_" is a real cookie line, not a comment.
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+        if len(line.split("\t")) != 7:
+            raise ValueError(
+                "Cookie file is not in Netscape format (expected 7 tab-separated fields)"
+            )
+        lines.append(line)
+        if len(lines) > MAX_COOKIES:
+            raise ValueError("Too many cookies")
+
+    if not lines:
+        raise ValueError("No cookies found in the uploaded file")
+    return "# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n"
+
+
+class CookieStore:
+    """Holds extension-uploaded cookies for this server's lifetime."""
+
+    def __init__(self, workdir: Path) -> None:
+        self._path = Path(workdir) / "cookies.txt"
+        self._lock = threading.Lock()
+        self._has = False
+
+    def has(self) -> bool:
+        with self._lock:
+            return self._has
+
+    def path(self) -> Path | None:
+        with self._lock:
+            return self._path if self._has else None
+
+    def update(self, netscape: str) -> int:
+        """Store validated cookies. Returns how many were written."""
+        data = normalize_cookies(netscape)
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+        os.replace(tmp, self._path)  # atomic, so a job never reads a half-written file
+        with self._lock:
+            self._has = True
+        return data.count("\n") - 1
+
+    def clear(self) -> None:
+        with self._lock:
+            self._has = False
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -526,9 +606,17 @@ class Handler(BaseHTTPRequestHandler):
     js_runtime: str | None
     origin_allow: str
     cookie_args: list[str]
+    cookie_store: CookieStore
 
     def log_message(self, fmt: str, *args) -> None:  # keep the console readable
         sys.stderr.write("  %s\n" % (fmt % args))
+
+    def _cookie_args(self) -> list[str]:
+        """Cookies for the next job: an operator-supplied flag, else uploaded ones."""
+        if self.cookie_args:
+            return self.cookie_args
+        path = self.cookie_store.path()
+        return ["--cookies", str(path)] if path else []
 
     # -- helpers ----------------------------------------------------------
 
@@ -595,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Missing JS runtime is not fatal, but it makes downloads flaky.
                     "jsRuntime": self.js_runtime or "",
                     "authRequired": bool(self.token),
-                    "cookies": bool(self.cookie_args),
+                    "cookies": bool(self.cookie_args) or self.cookie_store.has(),
                 },
             )
             return
@@ -618,8 +706,39 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
+    def _handle_cookies(self) -> None:
+        """Accept cookies.txt content from the extension and use it for later jobs.
+
+        The body is a JSON object: {"cookies": "<netscape cookies.txt>", "clear": false}.
+        Values are never logged or echoed back.
+        """
+        try:
+            payload = self._read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        if payload.get("clear"):
+            self.cookie_store.clear()
+            self._send_json(HTTPStatus.OK, {"ok": True, "cookies": False, "count": 0})
+            return
+
+        try:
+            count = self.cookie_store.update(payload.get("cookies", ""))
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        self._send_json(HTTPStatus.OK, {"ok": True, "cookies": True, "count": count})
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+
+        if path == "/cookies":
+            if not self._require_auth():
+                return
+            self._handle_cookies()
+            return
 
         if path.startswith("/cancel/"):
             if not self._require_auth():
@@ -660,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
         job = self.store.create(suggested_filename(payload))
         threading.Thread(
             target=run_job,
-            args=(job, payload, self.yt_dlp, self.ffmpeg, self.store, self.cookie_args),
+            args=(job, payload, self.yt_dlp, self.ffmpeg, self.store, self._cookie_args()),
             daemon=True,
         ).start()
         self._send_json(HTTPStatus.ACCEPTED, {"jobId": job.id, "filename": job.suggested_name})
@@ -702,6 +821,7 @@ def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobSto
     handler.cookie_args = build_cookie_args(
         getattr(args, "cookies", ""), getattr(args, "cookies_from_browser", "")
     )
+    handler.cookie_store = CookieStore(workdir)
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     server.daemon_threads = True
@@ -764,8 +884,9 @@ def main() -> int:
         print(f"  cookies: {handler.cookie_args[-1]} (YouTube sign-in enabled)")
     else:
         print(
-            "  cookies: none — YouTube may show \"confirm you're not a bot\". Pass\n"
-            "     --cookies <file> or --cookies-from-browser <browser> if that happens."
+            "  cookies: none yet — the extension can send them automatically, or pass\n"
+            "     --cookies <file> / --cookies-from-browser <browser>. YouTube may show\n"
+            '     "confirm you\'re not a bot" until cookies are supplied.'
         )
     if handler.token:
         print(f"  access token: {handler.token}")

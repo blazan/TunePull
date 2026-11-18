@@ -13,6 +13,9 @@ export const DEFAULTS = {
   videoFilenameTemplate: "{artist} - {title}",
   askWhereToSave: false, // when true the browser shows a Save-as dialog
   notifyOnFinish: true,
+  // Off by default: this uploads YouTube session cookies (account credentials) to
+  // the helper server, so it is an explicit opt-in.
+  syncCookies: false,
 };
 
 export const AUDIO_EXT = ".mp3";

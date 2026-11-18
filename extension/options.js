@@ -26,6 +26,9 @@ const ui = {
   videoSettings: el("video-settings"),
   askSave: el("ask-save"),
   notify: el("notify"),
+  syncCookies: el("sync-cookies"),
+  syncCookiesNow: el("sync-cookies-now"),
+  clearCookies: el("clear-cookies"),
   status: el("status"),
 };
 
@@ -75,6 +78,7 @@ async function load() {
   ui.videoTemplate.value = settings.videoFilenameTemplate || DEFAULTS.videoFilenameTemplate;
   ui.askSave.checked = Boolean(settings.askWhereToSave);
   ui.notify.checked = Boolean(settings.notifyOnFinish);
+  ui.syncCookies.checked = Boolean(settings.syncCookies);
   updateMediaMode();
   updatePreview();
 }
@@ -109,6 +113,7 @@ function collect() {
     videoFilenameTemplate: ui.videoTemplate.value.trim() || DEFAULTS.videoFilenameTemplate,
     askWhereToSave: ui.askSave.checked,
     notifyOnFinish: ui.notify.checked,
+    syncCookies: ui.syncCookies.checked,
   };
 }
 
@@ -134,6 +139,29 @@ async function test() {
   }
 }
 
+async function syncCookiesNow() {
+  if (!(await save())) return;
+  showStatus("Sending cookies…");
+  const res = await chrome.runtime.sendMessage({ type: "tunepull:syncCookies" });
+  if (res?.ok) {
+    const count = res.data?.count;
+    showStatus(`Sent ${count ?? "the"} YouTube cookie${count === 1 ? "" : "s"} to the server.`, "ok");
+  } else {
+    showStatus(res?.error || "Could not send cookies", "err");
+  }
+}
+
+async function clearServerCookies() {
+  if (!(await save())) return;
+  showStatus("Clearing cookies…");
+  const res = await chrome.runtime.sendMessage({ type: "tunepull:clearCookies" });
+  if (res?.ok) {
+    showStatus("The server has forgotten the cookies.", "ok");
+  } else {
+    showStatus(res?.error || "Could not clear cookies", "err");
+  }
+}
+
 // Save on change so a forgotten "Save" click can never lose a setting.
 for (const field of [
   ui.serverUrl,
@@ -153,10 +181,12 @@ for (const input of [ui.template, ui.folder, ui.videoTemplate, ui.videoFolder]) 
   input.addEventListener("input", updatePreview);
 }
 ui.mediaType.addEventListener("change", updateMediaMode);
-for (const box of [ui.askSave, ui.notify]) {
+for (const box of [ui.askSave, ui.notify, ui.syncCookies]) {
   box.addEventListener("change", save);
 }
 el("test").addEventListener("click", test);
 el("save").addEventListener("click", save);
+ui.syncCookiesNow.addEventListener("click", syncCookiesNow);
+ui.clearCookies.addEventListener("click", clearServerCookies);
 
 load();

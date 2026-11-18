@@ -418,6 +418,128 @@ print("[download] 100% of 0.50KiB")
 
 
 
+class CookieStoreTests(unittest.TestCase):
+    """Uploaded cookies are validated, stored 0600, and never echoed back."""
+
+    COOKIE = ".youtube.com\tTRUE\t/\tTRUE\t1735689600\tSID\tsecret-value\n"
+
+    def test_normalize_keeps_httponly_lines(self) -> None:
+        text = "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tv\n"
+        self.assertIn("#HttpOnly_", server.normalize_cookies(text))
+
+    def test_normalize_rejects_wrong_field_count(self) -> None:
+        with self.assertRaises(ValueError):
+            server.normalize_cookies(".youtube.com\tSID\tv\n")
+
+    def test_normalize_rejects_empty(self) -> None:
+        with self.assertRaises(ValueError):
+            server.normalize_cookies("# just a comment\n")
+
+    def test_normalize_rejects_non_string(self) -> None:
+        with self.assertRaises(ValueError):
+            server.normalize_cookies({"nope": True})
+
+    def test_update_writes_a_private_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = server.CookieStore(Path(tmp))
+            self.assertFalse(store.has())
+            count = store.update(self.COOKIE)
+            self.assertEqual(count, 1)
+            self.assertTrue(store.has())
+            path = store.path()
+            self.assertTrue(path.exists())
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_clear_forgets_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = server.CookieStore(Path(tmp))
+            store.update(self.COOKIE)
+            store.clear()
+            self.assertFalse(store.has())
+            self.assertIsNone(store.path())
+
+    def test_update_rejects_bad_input_and_keeps_old(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = server.CookieStore(Path(tmp))
+            store.update(self.COOKIE)
+            with self.assertRaises(ValueError):
+                store.update("garbage\n")
+            self.assertTrue(store.has(), "a rejected upload must not wipe valid cookies")
+
+
+class CookieEndpointTests(unittest.TestCase):
+    """POST /cookies feeds the next download, and /health reflects it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory()
+        fake_bin = Path(cls.tmp.name) / "bin"
+        fake_bin.mkdir()
+        make_fakes(fake_bin)
+        cls._old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{fake_bin}{os.pathsep}{cls._old_path}"
+
+        args = server.argparse.Namespace(
+            host="127.0.0.1", port=0, token="", no_auth=True, origin="*"
+        )
+        cls.httpd, cls.store = server.create_server(args)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        os.environ["PATH"] = cls._old_path
+        cls.tmp.cleanup()
+
+    def _post_cookies(self, body: dict):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/cookies",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        return urllib.request.urlopen(request, timeout=10)
+
+    def _health(self) -> dict:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=10) as r:
+            return json.load(r)
+
+    def test_upload_then_health_reports_cookies(self) -> None:
+        cookie = ".youtube.com\tTRUE\t/\tTRUE\t1735689600\tSID\tsecret\n"
+        with self._post_cookies({"cookies": cookie}) as response:
+            body = json.load(response)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(body["cookies"])
+        self.assertEqual(body["count"], 1)
+        self.assertTrue(self._health()["cookies"])
+
+    def test_response_never_echoes_the_cookie_value(self) -> None:
+        cookie = ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvery-secret-value\n"
+        with self._post_cookies({"cookies": cookie}) as response:
+            raw = response.read().decode()
+        self.assertNotIn("very-secret-value", raw)
+
+    def test_bad_cookies_rejected_with_400(self) -> None:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/cookies",
+            data=json.dumps({"cookies": "not a cookie file\n"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=10)
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_clear_removes_them(self) -> None:
+        cookie = ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tv\n"
+        self._post_cookies({"cookies": cookie}).close()
+        self.assertTrue(self._health()["cookies"])
+        with self._post_cookies({"clear": True}) as response:
+            self.assertFalse(json.load(response)["cookies"])
+        self.assertFalse(self._health()["cookies"])
+
+
 class ConcurrencyAndCancelTests(unittest.TestCase):
     """Two jobs must run at once, and a cancel must actually stop the child."""
 
