@@ -21,7 +21,11 @@ services:
       # Leave it empty to get a random token printed in the logs instead.
       - TUNEPULL_TOKEN=${TUNEPULL_TOKEN:-change-me-please}
     command: ["--token", "${TUNEPULL_TOKEN:-change-me-please}"]
-    # yt-dlp + ffmpeg are CPU/RAM heavy on a Pi; cap them so a job cannot starve
-    # the host. Tune the memory limit to your board (a Pi 4 with 2 GB is fine).
-    mem_limit: 1g
+    # yt-dlp + ffmpeg are CPU-heavy; cap the CPU so a job cannot starve the host.
     cpus: 2.0
+    # Memory cap. Raspberry Pi OS disables the memory cgroup controller by default,
+    # so Docker discards this and prints "Your kernel does not support memory limit
+    # capabilities" — harmless, but leave it commented unless you enable it first.
+    # To enforce it, add `cgroup_enable=memory cgroup_memory=1` to
+    # /boot/firmware/cmdline.txt (older OS: /boot/cmdline.txt), reboot, then uncomment:
+    # mem_limit: 1g

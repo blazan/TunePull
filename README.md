@@ -258,6 +258,11 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 - **"No supported JavaScript runtime could be found"** — recent yt-dlp versions use a
   JS runtime to fully solve YouTube. Add `deno` to the image (see the commented lines
   in the `Dockerfile`) if you see missing-format warnings.
+- **`Your kernel does not support memory limit capabilities`** — a harmless Docker
+  warning: Raspberry Pi OS disables the memory cgroup controller by default, so the
+  `mem_limit` line is discarded. The server still works. Enable it by adding
+  `cgroup_enable=memory cgroup_memory=1` to `/boot/firmware/cmdline.txt` (older OS:
+  `/boot/cmdline.txt`), rebooting, and uncommenting `mem_limit` in `docker-compose.yml`.
 
 ## Development
 
