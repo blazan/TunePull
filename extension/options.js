@@ -127,7 +127,8 @@ async function test() {
   if (res?.ok) {
     const version = res.data?.version ? ` (v${res.data.version})` : "";
     const tools = res.data?.tools ? ` — ${res.data.tools.join(", ")}` : "";
-    showStatus(`Connected${version}${tools}`, "ok");
+    const cookies = res.data && res.data.cookies === false ? " — no cookies (YouTube may ask for sign-in)" : "";
+    showStatus(`Connected${version}${tools}${cookies}`, "ok");
   } else {
     showStatus(res?.error || "Could not reach the server", "err");
   }

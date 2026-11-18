@@ -109,6 +109,30 @@ class MediaTypeTests(unittest.TestCase):
         )
 
 
+class CookieArgTests(unittest.TestCase):
+    """Cookies are how the server gets past YouTube's \"not a bot\" wall."""
+
+    def test_no_cookies_means_no_args(self) -> None:
+        self.assertEqual(server.build_cookie_args("", ""), [])
+        self.assertEqual(server.build_cookie_args(None, None), [])
+
+    def test_cookies_file_becomes_a_flag(self) -> None:
+        self.assertEqual(server.build_cookie_args("/tmp/c.txt", ""), ["--cookies", "/tmp/c.txt"])
+
+    def test_browser_becomes_a_flag(self) -> None:
+        self.assertEqual(
+            server.build_cookie_args("", "firefox"), ["--cookies-from-browser", "firefox"]
+        )
+
+    def test_cookies_file_wins_when_both_given(self) -> None:
+        self.assertEqual(
+            server.build_cookie_args("/tmp/c.txt", "chrome"), ["--cookies", "/tmp/c.txt"]
+        )
+
+    def test_whitespace_is_ignored(self) -> None:
+        self.assertEqual(server.build_cookie_args("  ", "  "), [])
+
+
 class FilenameHeaderTests(unittest.TestCase):
     """The header helpers must never emit a byte outside latin-1."""
 
@@ -155,6 +179,13 @@ class ErrorHintTests(unittest.TestCase):
 
     def test_unknown_error_has_no_hint(self) -> None:
         self.assertEqual(server.error_hint("HTTP Error 500: Internal Server Error"), "")
+
+    def test_bot_wall_hint_points_at_cookies(self) -> None:
+        hint = server.error_hint(
+            "Sign in to confirm you're not a bot. Use --cookies-from-browser or "
+            "--cookies for the authentication."
+        )
+        self.assertIn("cookies", hint)
 
     def test_hint_is_appended_to_last_error(self) -> None:
         lines = ["[download] 10%", "ERROR: [youtube] abc: Video unavailable"]
@@ -292,6 +323,99 @@ class DownloadRoundTripTests(unittest.TestCase):
         self.assertEqual(body["version"], server.VERSION)
         self.assertIn("yt-dlp", body["tools"])
         self.assertIn("jsRuntime", body)  # "" when absent, runtime name otherwise
+        self.assertIn("cookies", body)  # false unless --cookies was passed
+
+
+class CookiePassthroughTests(unittest.TestCase):
+    """--cookies must actually reach the yt-dlp command line."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory()
+        fake_bin = Path(cls.tmp.name) / "bin"
+        fake_bin.mkdir()
+        # A yt-dlp that records its argv, then writes the output file.
+        recorder = """#!/usr/bin/env python3
+import os, sys
+argv = sys.argv[1:]
+with open(os.environ["ARGV_LOG"], "w") as handle:
+    handle.write("\\n".join(argv))
+out = None
+for i, arg in enumerate(argv):
+    if arg == "-o":
+        out = argv[i + 1]
+if out:
+    path = out.replace("%(ext)s", "mp3")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"ID3\\x03\\x00\\x00\\x00" + b"\\x00" * 64)
+print("[download] 100% of 0.50KiB")
+"""
+        for name in ("yt-dlp", "ffmpeg"):
+            path = fake_bin / name
+            path.write_text(recorder)
+            path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        cls._old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{fake_bin}{os.pathsep}{cls._old_path}"
+        cls.argv_log = Path(cls.tmp.name) / "argv.log"
+        os.environ["ARGV_LOG"] = str(cls.argv_log)
+
+        args = server.argparse.Namespace(
+            host="127.0.0.1",
+            port=0,
+            token="",
+            no_auth=True,
+            origin="*",
+            cookies="/tmp/cookies.txt",
+            cookies_from_browser="",
+        )
+        cls.httpd, cls.store = server.create_server(args)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        os.environ["PATH"] = cls._old_path
+        del os.environ["ARGV_LOG"]
+        cls.tmp.cleanup()
+
+    def test_cookies_flag_reaches_yt_dlp(self) -> None:
+        import time
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/download",
+            data=json.dumps({"videoId": "dQw4w9WgXcQ", "title": "Signed In"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            job_id = json.load(response)["jobId"]
+
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/job/{job_id}", timeout=10
+            ) as response:
+                status = json.load(response)
+            if status["state"] in ("done", "error"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(status["state"], "done", status.get("error"))
+
+        argv = self.argv_log.read_text().split("\n")
+        self.assertIn("--cookies", argv)
+        self.assertIn("/tmp/cookies.txt", argv)
+
+    def test_health_reports_cookies_enabled(self) -> None:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/health", timeout=10
+        ) as response:
+            body = json.load(response)
+        self.assertTrue(body["cookies"])
+
 
 
 class ConcurrencyAndCancelTests(unittest.TestCase):

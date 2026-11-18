@@ -79,8 +79,10 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.1.0
+TunePull helper server v1.2.0
   listening on http://127.0.0.1:8756
+  cookies: none — YouTube may show "confirm you're not a bot". Pass
+     --cookies <file> or --cookies-from-browser <browser> if that happens.
   access token: 5f3c...9a
   -> paste this into the extension's settings page
 ```
@@ -94,6 +96,8 @@ Keep this window open while you download. Useful flags:
 | `--max-jobs 3` | How many downloads run at once. Extra clicks queue and start as slots free. |
 | `--token <value>` | Use a fixed token instead of a random one. |
 | `--no-auth` | Disable the token entirely (only for a trusted machine). |
+| `--cookies <file>` | A Netscape `cookies.txt` so yt-dlp can sign in. Fixes "confirm you're not a bot". |
+| `--cookies-from-browser <browser>` | Read cookies from a local browser instead (e.g. `firefox`, `chrome`). |
 | `--origin '*'` | Value for `Access-Control-Allow-Origin`. |
 
 ### 2. Install the extension
@@ -230,6 +234,20 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 `8756`. Nothing else changes; the extension just sends the track to the Pi instead of
 `localhost`.
 
+If downloads fail with **"Sign in to confirm you're not a bot"**, the Pi has no browser
+to read cookies from, so export a `cookies.txt` from a browser on your PC (a "Get
+cookies.txt" extension, Netscape format), copy it next to `docker-compose.yml`, then
+add the volume and the flag:
+
+```yaml
+    command: ["--token", "${TUNEPULL_TOKEN:-change-me-please}",
+              "--cookies", "/cookies/cookies.txt"]
+    volumes:
+      - ./cookies.txt:/cookies/cookies.txt:ro
+```
+
+Cookies expire, so refresh the file if the wall comes back.
+
 ### Security notes for a network-exposed server
 
 - **Always keep a token set** when the port is reachable beyond your own machine.
@@ -259,7 +277,7 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | `{version, tools, authRequired}` — used to show the connection status. |
+| `GET` | `/health` | `{version, tools, authRequired, jsRuntime, cookies}` — used to show the connection status. |
 | `POST` | `/download` | Body `{url\|videoId, title, artist, album, mediaType, quality, videoQuality}` → `{jobId}`. |
 | `GET` | `/job/<id>` | `{state, stage, percent, filename, error, cancelled}`. |
 | `POST` | `/cancel/<id>` | Stop a queued or running job (kills yt-dlp/ffmpeg). |
@@ -291,13 +309,26 @@ Your PC and the Pi must be on the same network, and the PC must be able to reach
 - **Download fails with a yt-dlp error** — the notification shows yt-dlp's own message
   (e.g. `HTTP Error 403: Forbidden`, `This video is unavailable`). YouTube changes
   often; update with `pip install -U yt-dlp` (or rebuild the Docker image).
+- **"Sign in to confirm you're not a bot" / `403 Forbidden` on the media stream** —
+  YouTube wants proof that a real person is asking, and it is stricter for cloud/VPS or
+  datacenter IPs. Give the helper server a signed-in browser's cookies:
+
+  ```bash
+  # On a machine where you are logged into YouTube in a browser:
+  python server/server.py --cookies-from-browser firefox    # or chrome, edge, brave…
+
+  # On a headless box (Pi, VPS), export cookies.txt in the browser first
+  # (a "Get cookies.txt" extension, Netscape format) and pass the file:
+  python server/server.py --cookies /path/to/cookies.txt
+  ```
+
+  Cookies are the only reliable fix for this wall. Update yt-dlp too
+  (`pip install -U yt-dlp`) — YouTube changes often, and a fresh yt-dlp clears many
+  blocks on its own. Running the server on a normal home connection helps as well.
 - **"This video is not available" / "Video unavailable"** — YouTube is refusing that
   specific video, usually because the label restricts it by region or only allows it
   in certain apps. TunePull cannot bypass this, and it is not a server fault: try a
   different upload of the same song.
-- **`403 Forbidden` on the media stream** — YouTube is refusing the download from that
-  IP. This is common on cloud/VPS or datacenter addresses. Run the server on a normal
-  home connection (e.g. the Pi on your LAN).
 - **A download stops part-way and Chrome says "Check your internet connection"** — this
   was a bug: a song title containing emoji or non-Latin characters crashed the server
   while it sent the file, so the browser saw the transfer break. Fixed in 1.0.1

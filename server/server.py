@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 # Video height caps; "best" means no cap. Anything else falls back to "best".
 ALLOWED_VIDEO_HEIGHTS = {"best", "2160", "1440", "1080", "720", "480", "360"}
@@ -210,6 +210,23 @@ def find_js_runtime() -> str | None:
     return None
 
 
+def build_cookie_args(cookies: str, cookies_from_browser: str) -> list[str]:
+    """yt-dlp arguments that authenticate the request.
+
+    YouTube shows "Sign in to confirm you're not a bot" for many videos, and more
+    often for datacenter IPs (a Pi behind a VPN, a rented server). Passing a
+    logged-in browser's cookies clears it. Both flags are optional and mutually
+    exclusive; a cookies file wins if both are given.
+    """
+    cookies = (cookies or "").strip()
+    if cookies:
+        return ["--cookies", cookies]
+    browser = (cookies_from_browser or "").strip()
+    if browser:
+        return ["--cookies-from-browser", browser]
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Download + conversion
 # ---------------------------------------------------------------------------
@@ -278,7 +295,8 @@ _ERROR_HINTS = (
     ),
     (
         ("sign in to confirm", "confirm you're not a bot", "confirm you are not a bot"),
-        "YouTube is asking for a sign-in; this server has no account. Try again later.",
+        "YouTube is asking for a sign-in to prove this is not a bot. Give the helper "
+        "server cookies (--cookies or --cookies-from-browser; see the README).",
     ),
     (
         ("age-restricted", "age restricted", "confirm your age", "inappropriate for some users"),
@@ -333,7 +351,12 @@ def content_disposition(name: str) -> str:
 
 
 def run_job(
-    job: Job, payload: dict, yt_dlp: list[str], ffmpeg: str, store: JobStore
+    job: Job,
+    payload: dict,
+    yt_dlp: list[str],
+    ffmpeg: str,
+    store: JobStore,
+    cookie_args: list[str] | None = None,
 ) -> None:
     video = is_video(payload)
     quality = str(payload.get("quality") or "320")
@@ -342,6 +365,7 @@ def run_job(
     height = str(payload.get("videoQuality") or "best")
     if height not in ALLOWED_VIDEO_HEIGHTS:
         height = "best"
+    cookie_args = cookie_args or []
 
     try:
         # Wait for a free slot without blocking a cancel: a queued job must still be
@@ -351,7 +375,7 @@ def run_job(
                 raise JobCancelled()
 
         try:
-            _run_job_inner(job, payload, yt_dlp, ffmpeg, quality, height, video)
+            _run_job_inner(job, payload, yt_dlp, ffmpeg, quality, height, video, cookie_args)
         finally:
             store.release_slot()
     except JobCancelled:
@@ -375,6 +399,7 @@ def _run_job_inner(
     quality: str,
     height: str,
     video: bool,
+    cookie_args: list[str],
 ) -> None:
     job.state = "running"
     target = build_target_url(payload)
@@ -395,6 +420,7 @@ def _run_job_inner(
             "--no-warnings",
             "--ffmpeg-location",
             ffmpeg,
+            *cookie_args,
             "-f",
             fmt,
             "--merge-output-format",
@@ -416,6 +442,7 @@ def _run_job_inner(
             "--no-warnings",
             "--ffmpeg-location",
             ffmpeg,
+            *cookie_args,
             "-f",
             "bestaudio/best",
             "--extract-audio",
@@ -498,6 +525,7 @@ class Handler(BaseHTTPRequestHandler):
     ffmpeg: str
     js_runtime: str | None
     origin_allow: str
+    cookie_args: list[str]
 
     def log_message(self, fmt: str, *args) -> None:  # keep the console readable
         sys.stderr.write("  %s\n" % (fmt % args))
@@ -567,6 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Missing JS runtime is not fatal, but it makes downloads flaky.
                     "jsRuntime": self.js_runtime or "",
                     "authRequired": bool(self.token),
+                    "cookies": bool(self.cookie_args),
                 },
             )
             return
@@ -631,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
         job = self.store.create(suggested_filename(payload))
         threading.Thread(
             target=run_job,
-            args=(job, payload, self.yt_dlp, self.ffmpeg, self.store),
+            args=(job, payload, self.yt_dlp, self.ffmpeg, self.store, self.cookie_args),
             daemon=True,
         ).start()
         self._send_json(HTTPStatus.ACCEPTED, {"jobId": job.id, "filename": job.suggested_name})
@@ -670,6 +699,9 @@ def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobSto
     handler.ffmpeg = find_executable("ffmpeg") or ""
     handler.js_runtime = find_js_runtime()
     handler.origin_allow = args.origin or "*"
+    handler.cookie_args = build_cookie_args(
+        getattr(args, "cookies", ""), getattr(args, "cookies_from_browser", "")
+    )
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     server.daemon_threads = True
@@ -688,6 +720,19 @@ def main() -> int:
     )
     parser.add_argument("--token", default="", help="fixed access token (default: random)")
     parser.add_argument("--no-auth", action="store_true", help="disable the access token")
+    parser.add_argument(
+        "--cookies",
+        default="",
+        help="path to a Netscape cookies.txt so yt-dlp can sign in (fixes the "
+        "\"confirm you're not a bot\" wall)",
+    )
+    parser.add_argument(
+        "--cookies-from-browser",
+        default="",
+        dest="cookies_from_browser",
+        help="read cookies from a local browser instead, e.g. firefox or chrome "
+        "(needs that browser's profile on this machine)",
+    )
     parser.add_argument(
         "--origin",
         default="*",
@@ -715,6 +760,13 @@ def main() -> int:
         )
     else:
         print(f"  javascript runtime: {handler.js_runtime}")
+    if handler.cookie_args:
+        print(f"  cookies: {handler.cookie_args[-1]} (YouTube sign-in enabled)")
+    else:
+        print(
+            "  cookies: none — YouTube may show \"confirm you're not a bot\". Pass\n"
+            "     --cookies <file> or --cookies-from-browser <browser> if that happens."
+        )
     if handler.token:
         print(f"  access token: {handler.token}")
         print("  -> paste this into the extension's settings page")

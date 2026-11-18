@@ -20,7 +20,16 @@ services:
       # Set a fixed token so it survives restarts. Change this value!
       # Leave it empty to get a random token printed in the logs instead.
       - TUNEPULL_TOKEN=${TUNEPULL_TOKEN:-change-me-please}
+      # Optional: a Netscape cookies.txt exported from a logged-in browser, used to
+      # clear YouTube's "Sign in to confirm you're not a bot" wall. To enable it:
+      #   1. put cookies.txt next to this file,
+      #   2. uncomment the two lines below (env + volume),
+      #   3. add "--cookies", "/cookies/cookies.txt" to the `command` list.
+      # - TUNEPULL_COOKIES=/cookies/cookies.txt
     command: ["--token", "${TUNEPULL_TOKEN:-change-me-please}"]
+    # Uncomment to pass the cookies file through (see TUNEPULL_COOKIES above).
+    # volumes:
+    #   - ./cookies.txt:/cookies/cookies.txt:ro
     # yt-dlp + ffmpeg are CPU-heavy; cap the CPU so a job cannot starve the host.
     cpus: 2.0
     # Memory cap. Raspberry Pi OS disables the memory cgroup controller by default,

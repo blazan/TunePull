@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TunePull",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "One-click download of the song or video playing on YouTube Music or YouTube, converted to MP3/MP4 by a helper server on your own machine.",
   "minimum_chrome_version": "116",
   "permissions": [

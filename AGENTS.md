@@ -59,6 +59,13 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
 * yt-dlp needs a JS runtime (`deno`) plus `yt-dlp-ejs` to solve YouTube's signature
   and `n` challenges. Without them it only warns, then silently drops formats, so
   failures look random. The image bundles both; keep them when editing the Dockerfile.
+* YouTube's **"Sign in to confirm you're not a bot"** wall (and the `403` that follows)
+  is cleared only by cookies. `build_cookie_args` turns `--cookies <file>` /
+  `--cookies-from-browser <browser>` into yt-dlp args, stored once on the handler as
+  `cookie_args` and threaded through `run_job` → `_run_job_inner` into both the audio
+  and video command lists. It is stricter for datacenter IPs, which is why a VPS or a
+  Pi behind a VPN hits it constantly and a home connection often does not. The fix is
+  cookies or a fresher yt-dlp, never a retry loop; the error hint says so.
 * `last_error` appends a plain-language `error_hint` for YouTube-side conditions
   (unavailable/private/region/age). Add new patterns to `_ERROR_HINTS` rather than
   matching in the extension, so the logic stays in one place and is unit-tested.
@@ -101,6 +108,10 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   apart from the base images.
 * Client side: set Server URL to `http://<pi-ip>:8756` and add the host under
   Trusted hosts. Saving the URL auto-adds the hostname.
+* Cookies for the bot wall are a **bind mount**, not baked into the image: the compose
+  file ships the volume + `--cookies` lines commented out because a cookies.txt is a
+  credential and must never land in a layer. The Pi has no browser, so the file is
+  exported on a PC and copied over.
 
 ```bash
 docker run -d -p 8756:8756 <user>/tunepull-server:latest --token <secret>
