@@ -30,6 +30,24 @@ node --check extension/background.js    # syntax check (any extension JS file)
 python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpeg)
 ```
 
+## Shipping a change to the user
+
+The user loads `extension/` unpacked from a clone on Windows (no Python there), so a
+change only reaches them after **both** steps:
+
+1. **Push.** Commits in this workspace are invisible to them; `origin/main` is what
+   `git pull` and the GitHub ZIP serve. Confirm the push actually landed before telling
+   them to update, e.g. `git show origin/main:extension/manifest.json | grep version`.
+2. **Reload.** Chrome reads the manifest only on load, so bump `manifest.json`'s
+   `version` with any extension change and have them reload on `chrome://extensions`.
+   The version shown there is the one reliable "did the update land" check — no Python,
+   no git, and it cannot lie because Chrome read it from the loaded manifest.
+
+A symptom of a stale build is *silent*: an MV3 API that is not in `permissions` is
+`undefined`, and guarded code (`if (chrome.contextMenus)`) then does nothing with no
+error. When a feature "doesn't exist" for the user, check the reported version before
+re-reading the code.
+
 ## Conventions and gotchas
 
 * The extension only sends track data to hosts the user trusts: loopback always,
