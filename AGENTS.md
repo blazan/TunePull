@@ -105,6 +105,9 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   `create_server` runs every `SWEEP_INTERVAL_SECONDS` so an idle server still cleans up —
   do not make cleanup depend only on a new job arriving. Keep this behaviour when
   touching `JobStore`; the whole point of a Pi deployment is that it stores nothing.
+* Jobs in `UNFETCHABLE_STATES` (`error`, `cancelled`) are swept on the short TTL too.
+  They can never be served, so their partial downloads must not sit out the hour — a Pi
+  that repeatedly hits the bot wall would otherwise fill its disk with failed attempts.
 * `docker stop`/`restart` send SIGTERM. `main()` installs a SIGTERM handler that raises
   `KeyboardInterrupt`, so the `finally` block (kill children, `rmtree` the workdir) runs.
   Without it the process dies abruptly and leaves job files in `/tmp`.

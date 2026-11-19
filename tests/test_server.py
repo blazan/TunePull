@@ -818,6 +818,37 @@ class RetentionTests(unittest.TestCase):
         self.store.sweep()
         self.assertFalse(job.path.exists())
 
+    def _failed_job(self, state: str) -> server.Job:
+        job = self.store.create("Song.mp3")
+        job.path = job.dir / "output.mp3"
+        job.path.write_bytes(b"x" * 64)
+        job.state = state
+        job.finished_at = time.time()
+        return job
+
+    def test_failed_job_partial_files_are_removed_quickly(self) -> None:
+        for state in ("error", "cancelled"):
+            with self.subTest(state=state):
+                job = self._failed_job(state)
+                job.finished_at = time.time() - (server.DELIVERED_TTL_SECONDS + 1)
+                self.store.sweep()
+                self.assertFalse(
+                    job.dir.exists(),
+                    f"a {state} job has nothing to serve, so it must not keep files",
+                )
+                self.assertIsNone(self.store.get(job.id))
+
+    def test_failed_job_survives_short_window(self) -> None:
+        job = self._failed_job("error")
+        self.store.sweep()
+        self.assertTrue(job.dir.exists(), "the client must be able to read the error")
+
+    def test_cancelled_job_record_survives_short_window(self) -> None:
+        job = self._failed_job("cancelled")
+        job.finished_at = time.time() - 5
+        self.store.sweep()
+        self.assertIsNotNone(self.store.get(job.id), "cancel polling needs the record")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

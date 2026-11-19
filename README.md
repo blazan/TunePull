@@ -79,7 +79,7 @@ python server/server.py
 You will see something like:
 
 ```
-TunePull helper server v1.4.0
+TunePull helper server v1.4.1
   listening on http://127.0.0.1:8756
   cookies: none yet — the extension can send them automatically, or pass
      --cookies <file> / --cookies-from-browser <browser>. YouTube may show
@@ -310,8 +310,9 @@ back.
   The helper server writes it to a private temp directory just long enough to stream
   it to the browser, then deletes it — a few minutes after the browser has taken the
   whole file (a short grace period covers a retry), and an hour at most if it is never
-  fetched. Stopping the container also deletes the temp directory. So a Pi running the
-  server does not accumulate your music.
+  fetched. A download that fails or is cancelled is deleted on the same short timer,
+  since there is nothing to fetch. Stopping the container also deletes the temp
+  directory. So a Pi running the server does not accumulate your music.
 - The folder setting is confined to your Downloads directory: `..` and absolute paths
   are stripped, so a template cannot be used to write outside it.
 - **YouTube cookies (opt-in).** If you enable cookie sync, the extension reads your

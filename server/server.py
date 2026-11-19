@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 # Video height caps; "best" means no cap. Anything else falls back to "best".
 ALLOWED_VIDEO_HEIGHTS = {"best", "2160", "1440", "1080", "720", "480", "360"}
@@ -52,6 +52,9 @@ JOB_TTL_SECONDS = 60 * 60  # finished jobs are cleaned up after an hour
 # the Pi from accumulating files it never needed to store in the first place.
 DELIVERED_TTL_SECONDS = 5 * 60
 SWEEP_INTERVAL_SECONDS = 60
+# A job in one of these states has no file to serve, so it is cleaned up on the
+# short TTL instead of waiting out JOB_TTL_SECONDS.
+UNFETCHABLE_STATES = frozenset({"error", "cancelled"})
 
 AUDIO_EXT = "mp3"
 VIDEO_EXT = "mp4"
@@ -180,6 +183,13 @@ class JobStore:
                     or (
                         job.delivered_at
                         and now - job.delivered_at > DELIVERED_TTL_SECONDS
+                    )
+                    # Failed or cancelled: nothing can ever be served, so its
+                    # partial files must not sit out the full hour. A Pi that
+                    # keeps hitting the bot wall would otherwise fill up.
+                    or (
+                        job.state in UNFETCHABLE_STATES
+                        and now - job.finished_at > DELIVERED_TTL_SECONDS
                     )
                 )
             ]
