@@ -41,12 +41,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ALLOWED_QUALITIES = {"128", "192", "256", "320"}
 # Video height caps; "best" means no cap. Anything else falls back to "best".
 ALLOWED_VIDEO_HEIGHTS = {"best", "2160", "1440", "1080", "720", "480", "360"}
 MAX_BODY_BYTES = 64 * 1024
 JOB_TTL_SECONDS = 60 * 60  # finished jobs are cleaned up after an hour
+# Once the browser has taken the whole file there is no reason to keep it: a short
+# grace period covers a client retry, then the copy is deleted. This is what keeps
+# the Pi from accumulating files it never needed to store in the first place.
+DELIVERED_TTL_SECONDS = 5 * 60
+SWEEP_INTERVAL_SECONDS = 60
 
 AUDIO_EXT = "mp3"
 VIDEO_EXT = "mp4"
@@ -92,6 +97,9 @@ class Job:
         self.error: str | None = None
         self.path: Path | None = None
         self.finished_at: float | None = None
+        # Set once the browser has downloaded the whole file, so the copy on the
+        # server can be dropped soon after instead of lingering for the full TTL.
+        self.delivered_at: float | None = None
         # The yt-dlp child, so a cancel or a shutdown can stop it.
         self.process: subprocess.Popen | None = None
         self.cancelled = False
@@ -164,7 +172,16 @@ class JobStore:
             stale = [
                 job_id
                 for job_id, job in self._jobs.items()
-                if job.finished_at and now - job.finished_at > JOB_TTL_SECONDS
+                if job.finished_at
+                and (
+                    now - job.finished_at > JOB_TTL_SECONDS
+                    # Delivered: the browser already has the bytes, so keep the
+                    # server copy only briefly in case the client retries.
+                    or (
+                        job.delivered_at
+                        and now - job.delivered_at > DELIVERED_TTL_SECONDS
+                    )
+                )
             ]
         for job_id in stale:
             self.remove(job_id)
@@ -805,6 +822,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         with job.path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile, length=64 * 1024)
+        # Reaching here means the whole file was handed to the socket, so the
+        # browser has it. Nothing needs to stay on the server beyond the grace
+        # period; the sweep thread removes it.
+        job.delivered_at = time.time()
 
 
 def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobStore]:
@@ -825,6 +846,19 @@ def create_server(args: argparse.Namespace) -> tuple[ThreadingHTTPServer, JobSto
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     server.daemon_threads = True
+
+    # Sweep on a timer, not only when a new job arrives: a server that finishes one
+    # download and then sits idle must still delete that file. Daemon thread so it
+    # never holds up shutdown.
+    def _sweeper() -> None:
+        while True:
+            time.sleep(SWEEP_INTERVAL_SECONDS)
+            try:
+                store.sweep()
+            except Exception:  # pragma: no cover - a sweep error must not kill the thread
+                pass
+
+    threading.Thread(target=_sweeper, name="tunepull-sweeper", daemon=True).start()
     return server, store
 
 
@@ -893,6 +927,14 @@ def main() -> int:
         print("  -> paste this into the extension's settings page")
     else:
         print("  auth disabled (--no-auth)")
+
+    # `docker stop` and `docker restart` send SIGTERM, which by default kills the
+    # process outright: the `finally` block below never runs and job files are left
+    # behind in /tmp. Route it through the same path as Ctrl+C so cleanup happens.
+    def _on_sigterm(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     try:
         server.serve_forever()

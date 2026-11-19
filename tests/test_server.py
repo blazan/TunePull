@@ -15,6 +15,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -314,6 +315,27 @@ class DownloadRoundTripTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(request, timeout=10)
         self.assertEqual(ctx.exception.code, 400)
+
+    def test_download_marks_job_delivered_and_sweeps_it(self) -> None:
+        """After the browser takes the file, the server copy must not be kept long."""
+        job_id = self._post({"videoId": "dQw4w9WgXcQ", "title": "Delivered Song"})
+        status = self._wait(job_id)
+        self.assertEqual(status["state"], "done", status.get("error"))
+
+        job = self.store.get(job_id)
+        self.assertIsNotNone(job)
+        self.assertIsNone(job.delivered_at, "not delivered until the file is fetched")
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/file/{job_id}", timeout=10
+        ) as response:
+            response.read()
+
+        self.assertIsNotNone(job.delivered_at, "streaming the file must mark it delivered")
+        # Pretend the grace period elapsed; the sweeper must then drop the file.
+        job.delivered_at = time.time() - (server.DELIVERED_TTL_SECONDS + 1)
+        self.store.sweep()
+        self.assertFalse(job.path.exists(), "the PC keeps the file, not the server")
 
     def test_health_reports_js_runtime(self) -> None:
         with urllib.request.urlopen(
@@ -754,6 +776,47 @@ class JsRuntimeDetectionTests(unittest.TestCase):
                 self.assertIsNone(server.find_js_runtime())
             finally:
                 os.environ["PATH"] = old
+
+
+class RetentionTests(unittest.TestCase):
+    """Files must not accumulate on the server: the PC is where downloads belong."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = server.JobStore(Path(self._tmp.name), max_jobs=1)
+
+    def _done_job(self, name: str = "Song.mp3") -> server.Job:
+        job = self.store.create(name)
+        job.path = job.dir / "output.mp3"
+        job.path.write_bytes(b"x" * 64)
+        job.state = "done"
+        job.finished_at = time.time()
+        return job
+
+    def test_fresh_job_is_kept(self) -> None:
+        job = self._done_job()
+        self.store.sweep()
+        self.assertTrue(job.path.exists(), "a just-finished file must stay for the client")
+
+    def test_delivered_file_is_removed_after_grace_period(self) -> None:
+        job = self._done_job()
+        job.delivered_at = time.time() - (server.DELIVERED_TTL_SECONDS + 1)
+        self.store.sweep()
+        self.assertFalse(job.path.exists(), "a downloaded file must not linger on the server")
+        self.assertIsNone(self.store.get(job.id))
+
+    def test_delivered_file_survives_short_retry_window(self) -> None:
+        job = self._done_job()
+        job.delivered_at = time.time() - 5
+        self.store.sweep()
+        self.assertTrue(job.path.exists(), "a brief grace period must remain for retries")
+
+    def test_undelivered_file_expires_at_hard_ttl(self) -> None:
+        job = self._done_job()
+        job.finished_at = time.time() - (server.JOB_TTL_SECONDS + 1)
+        self.store.sweep()
+        self.assertFalse(job.path.exists())
 
 
 if __name__ == "__main__":

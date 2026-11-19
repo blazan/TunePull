@@ -98,6 +98,16 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   must not prompt or infer it from the page. `mediaSettings` in `config.js` is the single
   place that maps the `mediaType` setting to a folder/template/extension; `buildDownloadPath`
   takes the extension so the saved name matches the server's file.
+* **The saved file belongs to the PC, never the server.** The server's copy exists only
+  to be streamed: `_serve_file` sets `job.delivered_at` once the bytes are handed to the
+  socket, and `sweep()` deletes the file `DELIVERED_TTL_SECONDS` (5 min) later, with
+  `JOB_TTL_SECONDS` (1 h) as the ceiling for a job nobody fetched. A sweeper thread in
+  `create_server` runs every `SWEEP_INTERVAL_SECONDS` so an idle server still cleans up —
+  do not make cleanup depend only on a new job arriving. Keep this behaviour when
+  touching `JobStore`; the whole point of a Pi deployment is that it stores nothing.
+* `docker stop`/`restart` send SIGTERM. `main()` installs a SIGTERM handler that raises
+  `KeyboardInterrupt`, so the `finally` block (kill children, `rmtree` the workdir) runs.
+  Without it the process dies abruptly and leaves job files in `/tmp`.
 
 ## Docker / remote host
 
