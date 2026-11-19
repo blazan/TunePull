@@ -104,6 +104,16 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   and whenever `storage.onChanged` reports a `mediaType` change. Never reintroduce a
   format-specific string in the manifest — it will lie in the other mode. The shortcut
   description cannot be changed at runtime, so it must stay format-neutral.
+* **Right-clicking the toolbar icon switches format** (`contexts: ["action"]`), and that
+  menu is the only per-download-ish control we allow: it writes the same `mediaType`
+  setting the options page writes. It is a `radio` pair so it also shows the current
+  mode. `contextMenus` must stay in `manifest.permissions` — without it the API is
+  undefined and the menu silently never appears. Rebuilds are serialized with a
+  generation counter because `removeAll` is async; two overlapping rebuilds would
+  otherwise create duplicate ids.
+* Anything that writes `mediaType` outside the options page must keep that page honest:
+  `options.js` listens on `storage.onChanged` and re-renders, because its `save()`
+  writes the *whole* form and would otherwise undo an outside change.
 * **The saved file belongs to the PC, never the server.** The server's copy exists only
   to be streamed: `_serve_file` sets `job.delivered_at` once the bytes are handed to the
   socket, and `sweep()` deletes the file `DELIVERED_TTL_SECONDS` (5 min) later, with

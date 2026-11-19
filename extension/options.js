@@ -189,4 +189,15 @@ el("save").addEventListener("click", save);
 ui.syncCookiesNow.addEventListener("click", syncCookiesNow);
 ui.clearCookies.addEventListener("click", clearServerCookies);
 
+// A change made from the toolbar's right-click menu (or another window) must show
+// up here too, otherwise the next save would silently undo it.
+if (chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "sync" || !changes.mediaType) return;
+    ui.mediaType.value = changes.mediaType.newValue === "video" ? "video" : "audio";
+    updateMediaMode();
+    updatePreview();
+  });
+}
+
 load();

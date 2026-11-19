@@ -158,3 +158,15 @@ test("actionTitle names the format the current mode produces", () => {
   assert.equal(actionTitle(undefined), "Download as MP3");
   assert.equal(actionTitle({ mediaType: "VIDEO" }), "Download as MP4 video");
 });
+
+test("the manifest grants contextMenus, or the format menu is silently dead", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const manifest = JSON.parse(
+    await readFile(new URL("../extension/manifest.json", import.meta.url), "utf8"),
+  );
+  // chrome.contextMenus is undefined without this permission; the docs require it.
+  assert.ok(
+    manifest.permissions.includes("contextMenus"),
+    "contextMenus must be declared or chrome.contextMenus never exists",
+  );
+});

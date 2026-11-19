@@ -11,11 +11,13 @@
 
 import {
   getSettings,
+  saveSettings,
   buildFileName,
   buildDownloadPath,
   isTrustedHost,
   mediaSettings,
   actionTitle,
+  isVideoMode,
 } from "./lib/config.js";
 import { collectCookieFile } from "./lib/cookies.js";
 
@@ -473,15 +475,88 @@ refreshActionTitle();
 chrome.runtime.onInstalled.addListener(refreshActionTitle);
 chrome.runtime.onStartup.addListener(refreshActionTitle);
 
-if (chrome.storage?.onChanged) {
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "sync" && changes.mediaType) refreshActionTitle();
-  });
-}
-
 if (chrome.commands?.onCommand) {
   chrome.commands.onCommand.addListener((command) => {
     if (command === "download-current-track") handleAction();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Right-click menu: switch format without opening the options page
+// ---------------------------------------------------------------------------
+
+const MENU_AUDIO = "tunepull-format-audio";
+const MENU_VIDEO = "tunepull-format-video";
+const MENU_OPTIONS = "tunepull-options";
+
+/**
+ * The radio marks the active format, so the menu doubles as a status indicator.
+ * Chrome persists menu items per extension id, so remove first to avoid
+ * "duplicate id" errors on update/restart.
+ *
+ * Only the newest rebuild may create items: a wake-up rebuild and a
+ * storage.onChanged rebuild can overlap, and their removeAll callbacks may fire
+ * interleaved, which would otherwise create each id twice.
+ */
+let menuBuild = 0;
+
+function buildFormatMenu(video) {
+  if (!chrome.contextMenus?.create) return;
+  const build = ++menuBuild;
+  chrome.contextMenus.removeAll(() => {
+    if (build !== menuBuild) return; // superseded by a newer rebuild
+    void chrome.runtime.lastError; // nothing to remove on a first run
+    chrome.contextMenus.create({
+      id: MENU_AUDIO,
+      title: "Download as MP3",
+      type: "radio",
+      checked: !video,
+      contexts: ["action"],
+    });
+    chrome.contextMenus.create({
+      id: MENU_VIDEO,
+      title: "Download as MP4 video",
+      type: "radio",
+      checked: video,
+      contexts: ["action"],
+    });
+    chrome.contextMenus.create({
+      id: MENU_OPTIONS,
+      title: "All settings…",
+      contexts: ["action"],
+    });
+  });
+}
+
+async function refreshFormatMenu() {
+  buildFormatMenu(isVideoMode(await getSettings()));
+}
+
+if (chrome.contextMenus) {
+  chrome.runtime.onInstalled.addListener(() => refreshFormatMenu());
+  chrome.runtime.onStartup.addListener(() => refreshFormatMenu());
+
+  // The service worker is torn down while idle; the menu survives but its radio
+  // state can go stale, so re-sync it whenever the worker wakes.
+  refreshFormatMenu();
+
+  chrome.contextMenus.onClicked.addListener((info) => {
+    if (info.menuItemId === MENU_OPTIONS) {
+      chrome.runtime.openOptionsPage();
+      return;
+    }
+    if (info.menuItemId !== MENU_AUDIO && info.menuItemId !== MENU_VIDEO) return;
+    // saveSettings fires storage.onChanged, which redraws the menu and the title.
+    saveSettings({ mediaType: info.menuItemId === MENU_VIDEO ? "video" : "audio" })
+      .catch(() => {}); // a failed write leaves the old mode; nothing to report
+  });
+}
+
+if (chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "sync" || !changes.mediaType) return;
+    refreshActionTitle();
+    refreshFormatMenu();
   });
 }
 

@@ -50,16 +50,23 @@ async function loadWorker({
     requests: [],
     cancelledDownloads: [],
     titles: [],
+    menus: [],
   };
 
   let actionHandler = null;
   let jobCounter = 0;
   let trackIndex = 0;
   let downloadCounter = 0;
+  let contextMenuHandler = null;
   const statusQueue = [...statuses];
   // chrome.downloads.onChanged listeners, so the mock can report completion.
   const downloadListeners = new Set();
   const storageListeners = new Set();
+  const notifyStorage = (keys) => {
+    const changes = {};
+    for (const key of keys) changes[key] = { newValue: settings[key] };
+    for (const listener of storageListeners) listener(changes, "sync");
+  };
   const downloadTimers = new Map();
 
   globalThis.chrome = {
@@ -68,6 +75,7 @@ async function loadWorker({
       onMessage: { addListener: () => {} },
       onInstalled: { addListener: () => {} },
       onStartup: { addListener: () => {} },
+      openOptionsPage: async () => { calls.optionsOpened = true; },
     },
     action: {
       setBadgeText: async ({ text }) => calls.badges.push(text),
@@ -76,8 +84,24 @@ async function loadWorker({
       onClicked: { addListener: (fn) => (actionHandler = fn) },
     },
     commands: { onCommand: { addListener: () => {} } },
+    contextMenus: {
+      // Mirror Chrome: removeAll() is async, then create() appends.
+      removeAll: (cb) => {
+        calls.menus.length = 0;
+        setTimeout(() => cb?.(), 0);
+      },
+      create: (props) => calls.menus.push(props),
+      onClicked: { addListener: (fn) => (contextMenuHandler = fn) },
+    },
     storage: {
-      sync: { get: async (defaults) => ({ ...defaults, ...settings }) },
+      sync: {
+        get: async (defaults) => ({ ...defaults, ...settings }),
+        // Real Chrome fires onChanged for the extension's own writes too.
+        set: async (patch) => {
+          Object.assign(settings, patch);
+          notifyStorage(Object.keys(patch));
+        },
+      },
       onChanged: { addListener: (fn) => storageListeners.add(fn) },
     },
     downloads: {
@@ -176,12 +200,11 @@ async function loadWorker({
     run: () => actionHandler(),
     getJobCount: () => jobCounter,
     setSettings: (patch) => Object.assign(settings, patch),
+    clickMenu: (id) => contextMenuHandler({ menuItemId: id }),
     /** Simulate the options page saving, which fires chrome.storage.onChanged. */
     changeSetting: (key, value) => {
       settings[key] = value;
-      for (const listener of storageListeners) {
-        listener({ [key]: { newValue: value } }, "sync");
-      }
+      notifyStorage([key]);
     },
   };
 }
@@ -574,4 +597,132 @@ test("a failed cookie sync does not block the download", async () => {
   await settle();
 
   assert.equal(calls.downloads.length, 1, "the download still happens");
+});
+
+// ---------------------------------------------------------------------------
+// Right-click format menu
+// ---------------------------------------------------------------------------
+
+test("the context menu offers both formats and marks the active one", async () => {
+  const { calls } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  const byId = Object.fromEntries(calls.menus.map((m) => [m.id, m]));
+  assert.ok(byId["tunepull-format-audio"], "audio entry must exist");
+  assert.ok(byId["tunepull-format-video"], "video entry must exist");
+  assert.ok(byId["tunepull-options"], "a shortcut to the full settings must exist");
+
+  assert.equal(byId["tunepull-format-audio"].checked, true, "audio is the active mode");
+  assert.equal(byId["tunepull-format-video"].checked, false);
+  assert.equal(byId["tunepull-format-audio"].type, "radio", "a radio shows the current choice");
+  assert.deepEqual(
+    byId["tunepull-format-audio"].contexts,
+    ["action"],
+    "the menu belongs to the toolbar icon, not the page",
+  );
+});
+
+test("the radio follows the setting when video mode is active", async () => {
+  const { calls } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "video" },
+  });
+  await settle();
+
+  const byId = Object.fromEntries(calls.menus.map((m) => [m.id, m]));
+  assert.equal(byId["tunepull-format-video"].checked, true);
+  assert.equal(byId["tunepull-format-audio"].checked, false);
+});
+
+test("choosing MP4 in the context menu switches the mode and the tooltip", async () => {
+  const { calls, clickMenu } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  clickMenu("tunepull-format-video");
+  await settle();
+
+  assert.equal(calls.titles.at(-1), "Download as MP4 video", "tooltip follows the menu");
+  const byId = Object.fromEntries(calls.menus.map((m) => [m.id, m]));
+  assert.equal(byId["tunepull-format-video"].checked, true, "radio moved to MP4");
+  assert.equal(byId["tunepull-format-audio"].checked, false);
+});
+
+test("a click after switching from the menu downloads the new format", async () => {
+  const { calls, clickMenu, run } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100, filename: "x.mp4" }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  clickMenu("tunepull-format-video");
+  await settle();
+  await run();
+  await settle();
+
+  assert.equal(calls.downloads.length, 1);
+  assert.equal(
+    calls.downloads[0].filename,
+    "Videos/YouTube/Queen - Bohemian Rhapsody.mp4",
+    "the video folder and .mp4 extension are used",
+  );
+  const posted = calls.requests.find((r) => r.href.includes("/download"));
+  assert.equal(posted.body.mediaType, "video", "the server is asked for video");
+});
+
+test("choosing MP3 again goes back to audio", async () => {
+  const { calls, clickMenu } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "video" },
+  });
+  await settle();
+  assert.equal(calls.titles.at(-1), "Download as MP4 video");
+
+  clickMenu("tunepull-format-audio");
+  await settle();
+
+  assert.equal(calls.titles.at(-1), "Download as MP3");
+  const byId = Object.fromEntries(calls.menus.map((m) => [m.id, m]));
+  assert.equal(byId["tunepull-format-audio"].checked, true);
+});
+
+test("'All settings' opens the options page instead of changing the format", async () => {
+  const { calls, clickMenu } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  clickMenu("tunepull-options");
+  await settle();
+
+  assert.equal(calls.optionsOpened, true, "the options page must open");
+  assert.deepEqual(calls.titles, ["Download as MP3"], "the format must not change");
+});
+
+test("rapid format switches never leave duplicate menu items", async () => {
+  const { calls, changeSetting } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  // Two saves in the same tick: their removeAll callbacks interleave.
+  changeSetting("mediaType", "video");
+  changeSetting("mediaType", "audio");
+  await settle(120);
+
+  const ids = calls.menus.map((m) => m.id);
+  assert.deepEqual(
+    ids.sort(),
+    ["tunepull-format-audio", "tunepull-format-video", "tunepull-options"],
+    "exactly one of each item, no duplicate-id errors",
+  );
+  const byId = Object.fromEntries(calls.menus.map((m) => [m.id, m]));
+  assert.equal(byId["tunepull-format-audio"].checked, true, "last write wins");
 });

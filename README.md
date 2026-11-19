@@ -35,6 +35,9 @@ the extension only ever talks to `127.0.0.1` (or a host you explicitly trust).
 
 - **One-click download.** Click the toolbar icon (or press `Alt+Shift+D`) — that is
   the whole action. No popup to fill in.
+- **Switch format without opening settings.** Right-click the toolbar icon to pick
+  *Download as MP3* or *Download as MP4 video*; the tick shows which one is active, and
+  the tooltip updates to match. Everything else stays on the options page.
 - **Global settings.** Folder, quality and file-name template are set once and apply
   to every download.
 - **Choose where files land.** Save into any folder inside your Downloads directory,
@@ -107,7 +110,7 @@ Keep this window open while you download. Useful flags:
 2. Turn on **Developer mode** (top right).
 3. Click **Load unpacked** and select the `extension/` folder.
 4. Open the extension's **options** page — right-click the toolbar icon and choose
-   *Options*, or use the *Extension options* link on `chrome://extensions` — then:
+   *All settings…*, or use the *Extension options* link on `chrome://extensions` — then:
    - paste the **access token** printed by the server,
    - set the **folder** to save into (e.g. `Music/YouTube`),
    - pick the **quality** and the **file-name template**.
@@ -149,7 +152,10 @@ track as well — the badge shows "Merging video" at `95%` while ffmpeg finishes
 
 ## Settings
 
-Everything lives on one page (right-click the toolbar icon → *Options*).
+Everything lives on one page (right-click the toolbar icon → *All settings…*). The only
+exception is the audio/video choice, which is also on that right-click menu so you can
+flip format without opening the page — both write the same setting, so they never
+disagree.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
