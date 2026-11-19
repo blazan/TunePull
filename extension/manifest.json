@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TunePull",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "One-click download of the song or video playing on YouTube Music or YouTube, converted to MP3/MP4 by a helper server on your own machine.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -25,7 +25,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Download as MP3",
+    "default_title": "TunePull — download the current track",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -42,7 +42,7 @@
       "suggested_key": {
         "default": "Alt+Shift+D"
       },
-      "description": "Download the current song as MP3"
+      "description": "Download the current song or video"
     }
   },
   "icons": {

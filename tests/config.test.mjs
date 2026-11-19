@@ -17,6 +17,7 @@ import {
   parseHostList,
   isVideoMode,
   mediaSettings,
+  actionTitle,
   DEFAULT_FILENAME_TEMPLATE,
 } from "../extension/lib/config.js";
 
@@ -147,4 +148,13 @@ test("isTrustedHost only allows explicitly listed hosts", () => {
 test("parseHostList splits on commas and whitespace", () => {
   assert.deepEqual(parseHostList("a.local, 10.0.0.1\nb.local"), ["a.local", "10.0.0.1", "b.local"]);
   assert.deepEqual(parseHostList(""), []);
+});
+
+test("actionTitle names the format the current mode produces", () => {
+  assert.equal(actionTitle({ mediaType: "audio" }), "Download as MP3");
+  assert.equal(actionTitle({ mediaType: "video" }), "Download as MP4 video");
+  // An unset or junk value must fall back to the audio default, like isVideoMode.
+  assert.equal(actionTitle({}), "Download as MP3");
+  assert.equal(actionTitle(undefined), "Download as MP3");
+  assert.equal(actionTitle({ mediaType: "VIDEO" }), "Download as MP4 video");
 });

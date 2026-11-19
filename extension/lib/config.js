@@ -119,6 +119,15 @@ export function isVideoMode(settings) {
 }
 
 /**
+ * Toolbar tooltip for the current mode. The manifest can only hold one static
+ * string, which would claim "MP3" even in video mode, so the worker sets this.
+ */
+export function actionTitle(settings) {
+  const video = isVideoMode(settings);
+  return `Download as ${video ? "MP4 video" : "MP3"}`;
+}
+
+/**
  * Resolve the folder/template/extension for the configured media type.
  * Audio and video keep separate settings, so switching mode never loses the
  * other's choices.

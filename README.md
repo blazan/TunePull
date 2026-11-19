@@ -371,6 +371,11 @@ back.
   > But if the server is reachable beyond your own machine, that traffic is plain HTTP
   > unless you put it behind TLS — so only enable this on a server you control, and
   > prefer HTTPS. Click **Forget cookies on server** to revoke them at any time.
+- **The toolbar tooltip says "MP3" even though video mode is set** — fixed in extension
+  1.2.1. The tooltip came from a static `default_title` in the manifest, which cannot
+  depend on a setting, so it kept advertising MP3 after you switched to MP4. The worker
+  now sets the real title from your setting (and updates it the moment you change it).
+  Reload the extension to pick this up.
 - **"This video is not available" / "Video unavailable"** — YouTube is refusing that
   specific video, usually because the label restricts it by region or only allows it
   in certain apps. TunePull cannot bypass this, and it is not a server fault: try a

@@ -98,6 +98,12 @@ python3 tests/test_server.py            # helper-server tests (fake yt-dlp/ffmpe
   must not prompt or infer it from the page. `mediaSettings` in `config.js` is the single
   place that maps the `mediaType` setting to a folder/template/extension; `buildDownloadPath`
   takes the extension so the saved name matches the server's file.
+* **The toolbar tooltip must follow `mediaType`.** A manifest `default_title` is static, so
+  it can only ever name one format; the worker sets the real title via
+  `chrome.action.setTitle` (`actionTitle()` in `config.js`) on startup, on install/startup,
+  and whenever `storage.onChanged` reports a `mediaType` change. Never reintroduce a
+  format-specific string in the manifest — it will lie in the other mode. The shortcut
+  description cannot be changed at runtime, so it must stay format-neutral.
 * **The saved file belongs to the PC, never the server.** The server's copy exists only
   to be streamed: `_serve_file` sets `job.delivered_at` once the bytes are handed to the
   socket, and `sweep()` deletes the file `DELIVERED_TTL_SECONDS` (5 min) later, with

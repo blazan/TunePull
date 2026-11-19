@@ -15,6 +15,7 @@ import {
   buildDownloadPath,
   isTrustedHost,
   mediaSettings,
+  actionTitle,
 } from "./lib/config.js";
 import { collectCookieFile } from "./lib/cookies.js";
 
@@ -453,6 +454,30 @@ async function handleAction() {
 }
 
 chrome.action.onClicked.addListener(handleAction);
+
+/**
+ * Keep the toolbar tooltip honest: the manifest's static title says "MP3", so a
+ * user who switched to video mode was told the wrong thing. The service worker
+ * is the only place that can read the setting, so it sets the title itself.
+ */
+async function refreshActionTitle() {
+  try {
+    await chrome.action.setTitle({ title: actionTitle(await getSettings()) });
+  } catch {
+    // A missing action API (or a transient storage error) must not break downloads.
+  }
+}
+
+refreshActionTitle();
+
+chrome.runtime.onInstalled.addListener(refreshActionTitle);
+chrome.runtime.onStartup.addListener(refreshActionTitle);
+
+if (chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "sync" && changes.mediaType) refreshActionTitle();
+  });
+}
 
 if (chrome.commands?.onCommand) {
   chrome.commands.onCommand.addListener((command) => {

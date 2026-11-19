@@ -49,6 +49,7 @@ async function loadWorker({
     badges: [],
     requests: [],
     cancelledDownloads: [],
+    titles: [],
   };
 
   let actionHandler = null;
@@ -58,19 +59,27 @@ async function loadWorker({
   const statusQueue = [...statuses];
   // chrome.downloads.onChanged listeners, so the mock can report completion.
   const downloadListeners = new Set();
+  const storageListeners = new Set();
   const downloadTimers = new Map();
 
   globalThis.chrome = {
     runtime: {
       getURL: (path) => `chrome-extension://test/${path}`,
       onMessage: { addListener: () => {} },
+      onInstalled: { addListener: () => {} },
+      onStartup: { addListener: () => {} },
     },
     action: {
       setBadgeText: async ({ text }) => calls.badges.push(text),
       setBadgeBackgroundColor: async () => {},
+      setTitle: async ({ title }) => calls.titles.push(title),
       onClicked: { addListener: (fn) => (actionHandler = fn) },
     },
     commands: { onCommand: { addListener: () => {} } },
+    storage: {
+      sync: { get: async (defaults) => ({ ...defaults, ...settings }) },
+      onChanged: { addListener: (fn) => storageListeners.add(fn) },
+    },
     downloads: {
       download: async (opts) => {
         calls.downloads.push(opts);
@@ -112,7 +121,6 @@ async function loadWorker({
       }),
     },
     scripting: { executeScript: async () => [] },
-    storage: { sync: { get: async (defaults) => ({ ...defaults, ...settings }) } },
     cookies: {
       getAll: async () => [
         {
@@ -162,13 +170,69 @@ async function loadWorker({
   // Cache-bust so each test gets a fresh module instance and fresh listeners.
   const mod = await import(`../extension/background.js?t=${Math.random()}`);
   assert.ok(actionHandler, "background.js must register chrome.action.onClicked");
-  return { mod, calls, run: () => actionHandler(), getJobCount: () => jobCounter };
+  return {
+    mod,
+    calls,
+    run: () => actionHandler(),
+    getJobCount: () => jobCounter,
+    setSettings: (patch) => Object.assign(settings, patch),
+    /** Simulate the options page saving, which fires chrome.storage.onChanged. */
+    changeSetting: (key, value) => {
+      settings[key] = value;
+      for (const listener of storageListeners) {
+        listener({ [key]: { newValue: value } }, "sync");
+      }
+    },
+  };
 }
 
 /** Let the fire-and-forget handleAction() promise chain settle. */
 function settle(ms = 60) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("the toolbar tooltip names MP3 in audio mode", async () => {
+  const { calls } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+
+  assert.deepEqual(calls.titles, ["Download as MP3"], "audio mode must say MP3");
+});
+
+test("the toolbar tooltip names MP4 in video mode", async () => {
+  const { calls } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "video" },
+  });
+  await settle();
+
+  assert.deepEqual(
+    calls.titles,
+    ["Download as MP4 video"],
+    "video mode must not claim MP3",
+  );
+});
+
+test("switching media type in the options page updates the tooltip", async () => {
+  const { calls, changeSetting } = await loadWorker({
+    statuses: [{ state: "done", stage: "Ready", percent: 100 }],
+    settings: { ...SETTINGS, mediaType: "audio" },
+  });
+  await settle();
+  assert.deepEqual(calls.titles, ["Download as MP3"]);
+
+  // The options page saves via chrome.storage.sync.set, which fires onChanged.
+  changeSetting("mediaType", "video");
+  await settle();
+
+  assert.deepEqual(
+    calls.titles,
+    ["Download as MP3", "Download as MP4 video"],
+    "the tooltip must follow the setting",
+  );
+});
 
 test("one click downloads into the configured folder", async () => {
   const { calls, run } = await loadWorker({
